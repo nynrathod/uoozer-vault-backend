@@ -1,0 +1,35 @@
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[database]
+max_connections = 10
+min_connections = 2
+acquire_timeout_seconds = 30
+idle_timeout_seconds = 600
+max_lifetime_seconds = 1800
+
+[jwt]
+issuer = "uoozer-vault"
+access_ttl_seconds = 900
+refresh_ttl_seconds = 2592000
+
+[argon2]
+m_cost = 65536
+t_cost = 3
+p_cost = 4
+output_len = 32
+
+[bcrypt]
+cost = 12
+
+[cors]
+# Leave empty here; actual origins should come from .env
+allowed_origins = []
+
+[rate_limit]
+auth_per_minute = 10
+api_per_minute = 120
+
+[r2]
+presign_ttl_seconds = 300
