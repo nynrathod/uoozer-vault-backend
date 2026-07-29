@@ -23,6 +23,24 @@ pub struct FolderResponse {
     pub updated_at: DateTime<Utc>,
 }
 
+impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for FolderResponse {
+    fn from_row(row: &'r sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row;
+
+        let encrypted_metadata: Vec<u8> = row.try_get("encrypted_metadata")?;
+        let metadata_nonce: Vec<u8> = row.try_get("metadata_nonce")?;
+
+        Ok(Self {
+            folder_id: row.try_get("folder_id")?,
+            parent_folder_id: row.try_get("parent_folder_id")?,
+            encrypted_metadata: crate::core::crypto::encode_b64(&encrypted_metadata),
+            metadata_nonce: crate::core::crypto::encode_b64(&metadata_nonce),
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+}
+
 #[derive(Debug, Deserialize, Validate)]
 pub struct UpdateFolderRequest {
     pub encrypted_metadata: String,

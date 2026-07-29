@@ -149,7 +149,7 @@ impl DeviceService {
 
         audit::log(
             &mut *tx,
-            user_id,
+            Some(user_id),
             Some(device_id),
             "device_revoked",
             &serde_json::json!({ "revoked_from_device": current_device_id }),
