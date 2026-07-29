@@ -15,34 +15,36 @@ use tower_http::{
 
 pub async fn run(state: AppState, addr: SocketAddr) -> anyhow::Result<()> {
     let app = build_router(state);
-
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
-
+    axum::serve(listener, app).await?;
     Ok(())
 }
 
-fn build_router(state: AppState) -> Router {
+pub fn build_router(state: AppState) -> Router {
     let cors = state.config.cors.as_cors_layer();
 
+    // Public routes (NO auth middleware)
     let public_routes = Router::new()
-        .merge(features::auth::routes::public_router())
+        .nest("/api/v1", features::auth::routes::public_router())
         .route("/health", axum::routing::get(health_check));
 
+    // Protected routes (Auth middleware applied ONLY here)
     let protected_routes = Router::new()
-        .merge(features::auth::routes::protected_router())
-        .merge(features::devices::routes::router())
-        .merge(features::folders::routes::router())
-        .merge(features::files::routes::router())
-        .merge(features::chunks::routes::router())
-        .merge(features::sync::routes::router())
+        .nest(
+            "/api/v1",
+            features::auth::routes::protected_router()
+                .merge(features::devices::routes::router())
+                .merge(features::folders::routes::router())
+                .merge(features::files::routes::router())
+                .merge(features::chunks::routes::router())
+                .merge(features::sync::routes::router()),
+        )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             core::middleware::require_auth,
         ));
 
+    // Merge them and apply global middlewares
     Router::new()
         .merge(public_routes)
         .merge(protected_routes)
@@ -51,16 +53,14 @@ fn build_router(state: AppState) -> Router {
             http::header::COOKIE,
         ]))
         .layer(CompressionLayer::new())
-        // ── Custom Single-Line API Logger ──────────────────
         .layer(axum::middleware::from_fn(core::middleware::api_logger))
-        // ────────────────────────────────────────────────────
         .layer(CatchPanicLayer::custom(core::error::handle_panic))
         .layer(cors)
         .with_state(state)
 }
 
 async fn health_check() -> &'static str {
-    "ok"
+    "OK"
 }
 
 async fn shutdown_signal() {
@@ -85,6 +85,4 @@ async fn shutdown_signal() {
         _ = ctrl_c => {},
         _ = terminate => {},
     }
-
-    tracing::info!("shutdown signal received");
 }
