@@ -57,8 +57,7 @@ hex = "0.4"
 ed25519-dalek = { version = "3.0", features = ["pkcs8", "pem", "rand_core"] }
 pkcs8 = { version = "0.11", features = ["std", "alloc"] }
 spki = { version = "0.7", features = ["pem"] }
-jsonwebtoken = "10.4"
-
+jsonwebtoken = { version = "10.4", default-features = false, features = ["rust_crypto"] }
 # Object storage
 aws-config = { version = "1.10", features = ["behavior-version-latest"] }
 aws-sdk-s3 = "1.139"
@@ -76,11 +75,42 @@ async-trait = "0.1"
 futures-util = "0.3"
 tokio-stream = "0.1"
 
+# OpenAPI / Swagger
+utoipa = { version = "5.5.0", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
+
+async-stream = "0.3"
+
 [dev-dependencies]
+# HTTP test client
+axum-test = "16"
 reqwest = { version = "0.13", default-features = false, features = [
     "json",
     "rustls",
 ] }
+tokio = { version = "1.53", features = ["full", "test-util"] }
+tower = { version = "0.5", features = ["util"] }
+
+# Property-based testing
+proptest = "1.6"
+quickcheck = "1.0"
+quickcheck_macros = "1.0"
+
+# Fakes + fixtures
+fake = { version = "4.3", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde", "clock"] }
+
+# Assertions
+pretty_assertions = "1.4"
+assert_matches = "1.5"
+
+# Snapshot testing
+insta = { version = "1.43", features = ["json", "redactions"] }
+
+# Testcontainers (optional, for CI)
+testcontainers = "0.24"
+
+dotenvy = "0.15"
 
 [profile.release]
 lto = "thin"
