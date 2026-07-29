@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use figment::{Figment, providers::Env, providers::Format, providers::Toml};
+use figment::{Figment, providers::Format, providers::Toml};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]

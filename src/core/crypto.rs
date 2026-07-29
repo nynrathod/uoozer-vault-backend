@@ -112,25 +112,29 @@ pub struct JwtKeyPair {
 
 impl JwtKeyPair {
     pub fn from_pem(pem: &str) -> Result<Self, AppError> {
-        let encoding = EncodingKey::from_ed_pem(pem.as_bytes()).map_err(|e| {
-            tracing::error!(error = ?e, "failed to parse JWT private key PEM");
-            AppError::Internal(anyhow::anyhow!("JWT key configuration error"))
+        // Parse the PEM using ed25519-dalek instead of jsonwebtoken
+        let signing_key = SigningKey::from_pkcs8_pem(pem).map_err(|e| {
+            AppError::Internal(anyhow::anyhow!(
+                "failed to parse Ed25519 private key: {}",
+                e
+            ))
         })?;
 
-        let signing_key = SigningKey::from_pkcs8_pem(pem).map_err(|e| {
-            tracing::error!(error = ?e, "failed to parse Ed25519 signing key from PEM");
-            AppError::Internal(anyhow::anyhow!("JWT key configuration error"))
+        // Convert the parsed key to PKCS8 DER format for jsonwebtoken's rust_crypto backend
+        let der = signing_key.to_pkcs8_der().map_err(|e| {
+            AppError::Internal(anyhow::anyhow!(
+                "failed to encode Ed25519 key to DER: {}",
+                e
+            ))
         })?;
+        let encoding = EncodingKey::from_ed_der(der.as_bytes());
 
         let verifying_key: VerifyingKey = signing_key.verifying_key();
-
         // Use explicit URL_SAFE_NO_PAD engine to avoid any invalid characters
         let pub_key_b64 =
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(verifying_key.to_bytes());
-
         let decoding = DecodingKey::from_ed_components(&pub_key_b64).map_err(|e| {
-            tracing::error!(error = ?e, "failed to build JWT decoding key");
-            AppError::Internal(anyhow::anyhow!("JWT key configuration error"))
+            AppError::Internal(anyhow::anyhow!("failed to parse Ed25519 public key: {}", e))
         })?;
 
         Ok(Self { encoding, decoding })
