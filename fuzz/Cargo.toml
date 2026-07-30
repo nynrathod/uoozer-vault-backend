@@ -1,0 +1,25 @@
+[package]
+name = "uoozer-vault-backend-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+uoozer-vault-backend = { path = ".." }
+base64 = "0.23"
+
+[[bin]]
+name = "fuzz_b64_decode"
+path = "fuzz_targets/fuzz_b64_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_jwt_verify"
+path = "fuzz_targets/fuzz_jwt_verify.rs"
+test = false
+doc = false
