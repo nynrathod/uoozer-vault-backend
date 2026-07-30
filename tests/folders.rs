@@ -208,7 +208,6 @@ async fn move_folder_into_descendant_returns_400() {
     let (server, _pool, _guard) = setup_app().await;
     let (access, _, _, _) = common::signup_full(&server, "grace@example.com").await;
 
-    // Create Root
     let root_resp = server
         .client
         .post(server.url(&format!("{API}/folders")))
@@ -217,10 +216,13 @@ async fn move_folder_into_descendant_returns_400() {
         .send()
         .await
         .unwrap();
-    let root_body = root_resp.json::<serde_json::Value>().await.unwrap();
-    let root_id = uuid::Uuid::parse_str(root_body["folder_id"].as_str().unwrap()).unwrap();
+    let root_id = uuid::Uuid::parse_str(
+        root_resp.json::<serde_json::Value>().await.unwrap()["folder_id"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
 
-    // Create Child under Root
     let child_resp = server
         .client
         .post(server.url(&format!("{API}/folders")))
@@ -229,8 +231,12 @@ async fn move_folder_into_descendant_returns_400() {
         .send()
         .await
         .unwrap();
-    let child_body = child_resp.json::<serde_json::Value>().await.unwrap();
-    let child_id = uuid::Uuid::parse_str(child_body["folder_id"].as_str().unwrap()).unwrap();
+    let child_id = uuid::Uuid::parse_str(
+        child_resp.json::<serde_json::Value>().await.unwrap()["folder_id"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
 
     let mut payload = factory::update_folder_req();
     payload["parent_folder_id"] = json!(child_id);
@@ -244,10 +250,5 @@ async fn move_folder_into_descendant_returns_400() {
         .await
         .unwrap();
 
-    let status = resp.status().as_u16();
-    assert!(
-        status == 400 || status == 200,
-        "Cycle detection gap. Got {}",
-        status
-    );
+    assert_eq!(resp.status(), http::StatusCode::BAD_REQUEST);
 }

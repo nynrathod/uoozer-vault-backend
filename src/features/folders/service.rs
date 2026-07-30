@@ -16,6 +16,32 @@ impl FolderService {
         Self { db }
     }
 
+    /// Checks if `new_parent_id` is `folder_id` itself or any of its descendants.
+    async fn is_descendant_or_self(
+        &self,
+        folder_id: Uuid,
+        new_parent_id: Uuid,
+    ) -> Result<bool, AppError> {
+        let is_cycle: bool = sqlx::query_scalar(
+            r#"
+            WITH RECURSIVE descendants AS (
+                SELECT folder_id FROM folders WHERE folder_id = $1 AND deleted_at IS NULL
+                UNION ALL
+                SELECT f.folder_id FROM folders f
+                INNER JOIN descendants d ON f.parent_folder_id = d.folder_id
+                WHERE f.deleted_at IS NULL
+            )
+            SELECT EXISTS(SELECT 1 FROM descendants WHERE folder_id = $2)
+            "#,
+        )
+        .bind(folder_id)
+        .bind(new_parent_id)
+        .fetch_one(&self.db)
+        .await?;
+
+        Ok(is_cycle)
+    }
+
     pub async fn create_folder(
         &self,
         user_id: Uuid,
@@ -112,11 +138,13 @@ impl FolderService {
         let encrypted_metadata = crypto::decode_b64(&req.encrypted_metadata)?;
 
         if let Some(new_parent) = req.parent_folder_id {
-            if new_parent == folder_id {
+            // Check for cycles using the recursive CTE
+            if self.is_descendant_or_self(folder_id, new_parent).await? {
                 return Err(AppError::BadRequest(
-                    "cannot move folder into itself".to_string(),
+                    "cannot move folder into itself or its own descendant".to_string(),
                 ));
             }
+            // Verify ownership of the new parent
             self.verify_folder_ownership(new_parent, user_id).await?;
         }
 

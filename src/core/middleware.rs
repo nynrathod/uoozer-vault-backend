@@ -36,20 +36,23 @@ pub async fn require_auth(
 
     let claims = state.jwt_keys.verify_access_token(token)?;
 
-    let device_active: Option<bool> = sqlx::query_scalar(
-        "SELECT (revoked_at IS NULL) FROM devices WHERE device_id = $1 AND user_id = $2",
+    // Check if the device is revoked OR the user is disabled
+    let is_active: Option<bool> = sqlx::query_scalar(
+        "SELECT (d.revoked_at IS NULL AND u.disabled_at IS NULL) 
+         FROM devices d 
+         JOIN users u ON d.user_id = u.user_id 
+         WHERE d.device_id = $1 AND d.user_id = $2",
     )
     .bind(claims.did)
     .bind(claims.sub)
     .fetch_optional(&state.db)
     .await?;
 
-    match device_active {
-        Some(true) => {}
-        Some(false) => return Err(AppError::DeviceRevoked),
-        None => return Err(AppError::Unauthorized),
+    if is_active != Some(true) {
+        return Err(AppError::Unauthorized);
     }
 
+    // Check if the session is revoked
     let session_active: Option<bool> = sqlx::query_scalar(
         "SELECT (revoked_at IS NULL) FROM sessions WHERE session_id = $1 AND user_id = $2",
     )
@@ -58,10 +61,8 @@ pub async fn require_auth(
     .fetch_optional(&state.db)
     .await?;
 
-    match session_active {
-        Some(true) => {}
-        Some(false) => return Err(AppError::Unauthorized),
-        None => return Err(AppError::Unauthorized),
+    if session_active != Some(true) {
+        return Err(AppError::Unauthorized);
     }
 
     req.extensions_mut().insert(AuthenticatedUser {
@@ -103,6 +104,28 @@ pub async fn api_logger(req: Request, next: Next) -> Response {
     );
 
     response
+}
+
+pub async fn rate_limit_auth(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, AppError> {
+    let ip = extract_client_ip(&req)
+        .unwrap_or_else(|| std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)));
+    state.auth_rate_limiter.check(ip)?;
+    Ok(next.run(req).await)
+}
+
+pub async fn rate_limit_api(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, AppError> {
+    let ip = extract_client_ip(&req)
+        .unwrap_or_else(|| std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)));
+    state.api_rate_limiter.check(ip)?;
+    Ok(next.run(req).await)
 }
 
 #[derive(Debug, Clone, Copy)]
