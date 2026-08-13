@@ -24,4 +24,7 @@ pub struct ResumeInfoResponse {
     pub total_chunks: i32,
     pub uploaded_chunks: Vec<i32>,
     pub missing_chunks: Vec<i32>,
+    /// Fresh presigned PUT URLs for missing chunks.
+    /// `None` if R2 is not configured (dev/test mode).
+    pub upload_urls: Option<Vec<crate::features::files::dto::ChunkUploadUrl>>,
 }

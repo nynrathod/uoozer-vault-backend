@@ -6,6 +6,7 @@ use axum::{
 use http::StatusCode;
 use serde::Deserialize;
 use uuid::Uuid;
+use validator::Validate;
 
 use crate::app_state::AppState;
 use crate::core::error::AppError;
@@ -17,6 +18,19 @@ use super::service::FileService;
 #[derive(Deserialize)]
 pub struct ListFilesQuery {
     pub folder_id: Option<Uuid>,
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+    #[serde(default)]
+    pub offset: i64,
+}
+
+fn default_limit() -> i64 {
+    100
+}
+
+#[derive(Deserialize)]
+pub struct DownloadQuery {
+    pub version_id: Option<Uuid>,
 }
 
 pub async fn create_file(
@@ -24,8 +38,23 @@ pub async fn create_file(
     user: AuthenticatedUser,
     Json(req): Json<CreateFileRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let svc = FileService::new(state.db);
-    let resp = svc.create_file(user.user_id, req).await?;
+    req.validate()?;
+    let svc = FileService::new(&state);
+    let resp = svc.create_file(user.user_id, user.device_id, req).await?;
+    Ok((StatusCode::CREATED, Json(resp)))
+}
+
+pub async fn create_version(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(file_id): Path<Uuid>,
+    Json(req): Json<CreateFileRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    req.validate()?;
+    let svc = FileService::new(&state);
+    let resp = svc
+        .create_version(user.user_id, user.device_id, file_id, req)
+        .await?;
     Ok((StatusCode::CREATED, Json(resp)))
 }
 
@@ -34,7 +63,7 @@ pub async fn get_file(
     user: AuthenticatedUser,
     Path(file_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
-    let svc = FileService::new(state.db);
+    let svc = FileService::new(&state);
     let file = svc.get_file(user.user_id, file_id).await?;
     Ok(Json(file))
 }
@@ -44,9 +73,22 @@ pub async fn list_files(
     user: AuthenticatedUser,
     Query(q): Query<ListFilesQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let svc = FileService::new(state.db);
-    let files = svc.list_files(user.user_id, q.folder_id).await?;
+    let svc = FileService::new(&state);
+    let files = svc
+        .list_files(user.user_id, q.folder_id, q.limit, q.offset)
+        .await?;
     Ok(Json(files))
+}
+
+pub async fn update_file(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(file_id): Path<Uuid>,
+    Json(req): Json<UpdateFileRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FileService::new(&state);
+    let file = svc.update_file(user.user_id, file_id, req).await?;
+    Ok(Json(file))
 }
 
 pub async fn complete_upload(
@@ -54,8 +96,9 @@ pub async fn complete_upload(
     user: AuthenticatedUser,
     Json(req): Json<CompleteUploadRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let svc = FileService::new(state.db);
-    svc.complete_upload(user.user_id, req).await?;
+    let svc = FileService::new(&state);
+    svc.complete_upload(user.user_id, user.device_id, req)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -63,10 +106,11 @@ pub async fn get_download_manifest(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     Path(file_id): Path<Uuid>,
+    Query(q): Query<DownloadQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let svc = FileService::new(state.db);
+    let svc = FileService::new(&state);
     let manifest = svc
-        .get_download_manifest(user.user_id, file_id, None)
+        .get_download_manifest(user.user_id, file_id, q.version_id)
         .await?;
     Ok(Json(manifest))
 }
@@ -76,8 +120,9 @@ pub async fn delete_file(
     user: AuthenticatedUser,
     Path(file_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
-    let svc = FileService::new(state.db);
-    svc.delete_file(user.user_id, file_id).await?;
+    let svc = FileService::new(&state);
+    svc.delete_file(user.user_id, user.device_id, file_id)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -86,7 +131,7 @@ pub async fn list_versions(
     user: AuthenticatedUser,
     Path(file_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
-    let svc = FileService::new(state.db);
+    let svc = FileService::new(&state);
     let versions = svc.list_versions(user.user_id, file_id).await?;
     Ok(Json(versions))
 }
@@ -96,8 +141,8 @@ pub async fn restore_version(
     user: AuthenticatedUser,
     Path((file_id, version_id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse, AppError> {
-    let svc = FileService::new(state.db);
-    svc.restore_version(user.user_id, file_id, version_id)
+    let svc = FileService::new(&state);
+    svc.restore_version(user.user_id, user.device_id, file_id, version_id)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
