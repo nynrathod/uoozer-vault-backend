@@ -76,8 +76,16 @@ pub async fn setup_app() -> (TestServer, PgPool, TestGuard) {
     settings.argon2.t_cost = 1;
     settings.bcrypt.cost = 4;
 
-    settings.r2.access_key_id = String::new();
-    settings.r2.secret_access_key = String::new();
+    // If this env var is set, use real MinIO for E2E tests
+    if std::env::var("RUN_E2E_STORAGE_TESTS").is_ok() {
+        settings.r2.access_key_id = "minioadmin".to_string();
+        settings.r2.secret_access_key = "minioadmin".to_string();
+        settings.r2.bucket = "uoozer-vault".to_string();
+        settings.r2.endpoint = "http://localhost:9000".to_string();
+    } else {
+        settings.r2.access_key_id = String::new();
+        settings.r2.secret_access_key = String::new();
+    }
 
     let settings = Arc::new(settings);
     let state = AppState::new(settings, pool.clone())

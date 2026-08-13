@@ -91,3 +91,28 @@ pub fn signup_bad_b64(email: &str) -> Value {
     payload["identity_pubkey"] = json!("!!!not_valid_base64!!!");
     payload
 }
+
+pub fn create_file_req(folder_id: Option<uuid::Uuid>) -> Value {
+    json!({
+        "folder_id": folder_id,
+        "encrypted_metadata": random_b64(48),
+        "metadata_nonce": random_b64(24),
+        "plaintext_blake3": random_b64(32),
+        "total_size": 1024,
+        "total_chunks": 1,
+        "encryption_header": random_b64(24),
+        "chunks": [{
+            "chunk_index": 0,
+            "segment_index": 0,
+            "chunk_size": 1024 + 17,
+            "chunk_blake3": random_b64(32),
+        }]
+    })
+}
+
+pub fn update_file_req() -> Value {
+    json!({
+        "encrypted_metadata": random_b64(48),
+        "metadata_nonce": random_b64(24),
+    })
+}

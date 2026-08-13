@@ -252,3 +252,44 @@ async fn move_folder_into_descendant_returns_400() {
 
     assert_eq!(resp.status(), http::StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn rename_folder_updates_metadata() {
+    let (server, _pool, _guard) = setup_app().await;
+    let (access, _, _, _) = common::signup_full(&server, "heidi@example.com").await;
+
+    // 1. Create a folder
+    let create_resp = server
+        .client
+        .post(server.url(&format!("{API}/folders")))
+        .header("authorization", format!("Bearer {access}"))
+        .json(&factory::create_folder_req(None))
+        .send()
+        .await
+        .unwrap();
+    let create_body = create_resp.json::<serde_json::Value>().await.unwrap();
+    let folder_id = create_body["folder_id"].as_str().unwrap();
+
+    // 2. Rename it by patching only the metadata (parent_folder_id = null)
+    let mut update_payload = factory::update_folder_req();
+    update_payload["parent_folder_id"] = serde_json::json!(null); // Keep it in root
+
+    let resp = server
+        .client
+        .patch(server.url(&format!("{API}/folders/{folder_id}")))
+        .header("authorization", format!("Bearer {access}"))
+        .json(&update_payload)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+
+    // Verify the metadata actually changed to the new values
+    assert_eq!(
+        body["encrypted_metadata"],
+        update_payload["encrypted_metadata"]
+    );
+    assert_eq!(body["metadata_nonce"], update_payload["metadata_nonce"]);
+}

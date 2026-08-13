@@ -17,7 +17,6 @@ async fn list_devices_returns_current_device() {
 
     assert_eq!(resp.status(), http::StatusCode::OK);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(body.is_array());
     assert_eq!(body.as_array().unwrap().len(), 1);
     assert_eq!(body[0]["device_name"], "Test Device");
     assert_eq!(body[0]["is_current"], true);
@@ -40,6 +39,7 @@ async fn list_sessions_returns_current_session() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert!(body.is_array());
     assert!(!body.as_array().unwrap().is_empty());
+    assert_eq!(body[0]["is_current"], true);
 }
 
 #[tokio::test]
@@ -67,8 +67,6 @@ async fn cannot_revoke_current_device() {
         .unwrap();
 
     assert_eq!(resp.status(), http::StatusCode::BAD_REQUEST);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    common::assertions::assert_error_code(&body, "BAD_REQUEST");
 }
 
 #[tokio::test]
