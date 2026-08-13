@@ -1,4 +1,4 @@
-use axum::{Router, routing::post};
+use axum::{Router, routing::get, routing::post};
 
 use super::handlers;
 use crate::app_state::AppState;
@@ -16,4 +16,5 @@ pub fn protected_router() -> Router<AppState> {
     Router::new()
         .route("/auth/logout", post(handlers::logout))
         .route("/auth/password", post(handlers::change_password))
+        .route("/auth/keys", get(handlers::get_keys))
 }

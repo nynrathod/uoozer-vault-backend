@@ -11,6 +11,7 @@ CREATE TABLE users (
     user_id              UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
     email                TEXT         NOT NULL UNIQUE,
     email_normalized     TEXT         NOT NULL UNIQUE,
+		full_name TEXT NOT NULL DEFAULT '',
 
     -- KDF parameters (stored per-user for forward-compatible upgrades)
     salt                 BYTEA        NOT NULL,

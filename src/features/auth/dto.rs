@@ -30,6 +30,8 @@ pub struct SignupInitResponse {
 #[derive(Debug, Deserialize, Validate)]
 pub struct SignupCompleteRequest {
     pub signup_token: String,
+    #[validate(length(min = 1, max = 100))]
+    pub full_name: String,
     #[validate(length(min = 1))]
     pub auth_key: String,
     #[validate(length(min = 1))]
@@ -49,6 +51,7 @@ pub struct AuthResponse {
     pub refresh_token: String,
     pub token_type: String,
     pub expires_in: u64,
+    pub full_name: String,
 }
 
 #[derive(Debug, Deserialize, Validate)]
@@ -79,4 +82,12 @@ pub struct PasswordChangeRequest {
 pub struct LogoutRequest {
     pub revoke_device: Option<bool>,
     pub refresh_token: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct KeyBundleResponse {
+    pub wrapped_dek: String,
+    pub wrapped_dek_nonce: String,
+    pub recovery_wrapped_dek: String,
+    pub recovery_wrapped_dek_nonce: String,
 }

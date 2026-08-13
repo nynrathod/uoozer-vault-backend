@@ -8,6 +8,7 @@ use crate::app_state::AppState;
 use crate::core::error::AppError;
 use crate::core::extractors::{extract_client_ip, extract_user_agent};
 use crate::core::middleware::AuthenticatedUser;
+use crate::features::auth::dto::KeyBundleResponse;
 
 use super::dto::{
     LoginRequest, LogoutRequest, PasswordChangeRequest, PreloginRequest, RefreshRequest,
@@ -101,4 +102,13 @@ pub async fn change_password(
     svc.change_password(user.user_id, user.device_id, req)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn get_keys(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+) -> Result<Json<KeyBundleResponse>, AppError> {
+    let svc = AuthService::new(&state);
+    let keys = svc.get_keys(user.user_id).await?;
+    Ok(Json(keys))
 }

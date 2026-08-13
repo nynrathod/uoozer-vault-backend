@@ -11,8 +11,8 @@ use crate::core::error::AppError;
 use crate::features::audit;
 
 use super::dto::{
-    AuthResponse, LoginRequest, PasswordChangeRequest, PreloginResponse, SignupCompleteRequest,
-    SignupInitResponse,
+    AuthResponse, KeyBundleResponse, LoginRequest, PasswordChangeRequest, PreloginResponse,
+    SignupCompleteRequest, SignupInitResponse,
 };
 
 pub struct AuthService {
@@ -155,11 +155,12 @@ impl AuthService {
             Utc::now() + chrono::Duration::seconds(self.config.jwt.refresh_ttl_seconds as i64);
 
         sqlx::query(
-            "INSERT INTO users (user_id, email, email_normalized, salt, argon2_params, auth_key_hash, recovery_auth_key_hash, wrapped_dek, wrapped_dek_nonce, recovery_wrapped_dek, recovery_wrapped_dek_nonce, identity_pubkey) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
-        )
+						"INSERT INTO users (user_id, email, email_normalized, full_name, salt, argon2_params, auth_key_hash, recovery_auth_key_hash, wrapped_dek, wrapped_dek_nonce, recovery_wrapped_dek, recovery_wrapped_dek_nonce, identity_pubkey) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"
+				)
         .bind(user_id)
         .bind(&pending.email)
         .bind(&pending.email_normalized)
+				.bind(&req.full_name)
         .bind(&pending.salt)
         .bind(&pending.argon2_params)
         .bind(&auth_key_hash)
@@ -224,6 +225,7 @@ impl AuthService {
             refresh_token,
             token_type: "Bearer".to_string(),
             expires_in: self.config.jwt.access_ttl_seconds,
+            full_name: req.full_name,
         })
     }
 
@@ -243,15 +245,16 @@ impl AuthService {
         }
 
         let user: Option<(
-            Uuid,
-            String,
-            String,
-            Option<chrono::DateTime<chrono::Utc>>,
-        )> = sqlx::query_as(
-            "SELECT user_id, auth_key_hash, recovery_auth_key_hash, disabled_at FROM users WHERE email_normalized = $1"
-        )
-        .bind(&normalized)
-        .fetch_optional(&self.db)
+					Uuid,
+					String,
+					String,
+					String,
+					Option<chrono::DateTime<chrono::Utc>>,
+				)> = sqlx::query_as(
+						"SELECT user_id, full_name, auth_key_hash, recovery_auth_key_hash, disabled_at FROM users WHERE email_normalized = $1"
+				)
+				.bind(&normalized)
+				.fetch_optional(&self.db)
         .await?;
 
         let user = match user {
@@ -262,7 +265,7 @@ impl AuthService {
             }
         };
 
-        let (user_id, auth_key_hash, recovery_auth_key_hash, disabled_at) = user;
+        let (user_id, full_name, auth_key_hash, recovery_auth_key_hash, disabled_at) = user;
 
         if disabled_at.is_some() {
             return Err(AppError::Forbidden);
@@ -405,6 +408,7 @@ impl AuthService {
             refresh_token,
             token_type: "Bearer".to_string(),
             expires_in: self.config.jwt.access_ttl_seconds,
+            full_name,
         })
     }
 
@@ -418,8 +422,12 @@ impl AuthService {
             String,
             Option<String>,
             Option<Uuid>,
-        )> = sqlx::query_as(
-            "SELECT session_id, user_id, device_id, refresh_token_hash, revoked_reason, rotated_to FROM sessions WHERE refresh_token_jti = $1"
+						String
+       )> = sqlx::query_as(
+            "SELECT s.session_id, s.user_id, s.device_id, s.refresh_token_hash, s.revoked_reason, s.rotated_to, u.full_name 
+             FROM sessions s 
+             JOIN users u ON s.user_id = u.user_id 
+             WHERE s.refresh_token_jti = $1"
         )
         .bind(claims.jti)
         .fetch_optional(&self.db)
@@ -430,7 +438,8 @@ impl AuthService {
             None => return Err(AppError::InvalidRefreshToken),
         };
 
-        let (session_id, user_id, device_id, stored_hash, revoked_reason, rotated_to) = session;
+        let (session_id, user_id, device_id, stored_hash, revoked_reason, rotated_to, full_name) =
+            session;
 
         if revoked_reason.is_some() {
             return Err(AppError::InvalidRefreshToken);
@@ -525,6 +534,7 @@ impl AuthService {
             refresh_token: new_refresh_token,
             token_type: "Bearer".to_string(),
             expires_in: self.config.jwt.access_ttl_seconds,
+            full_name,
         })
     }
 
@@ -618,6 +628,25 @@ impl AuthService {
         tx.commit().await?;
 
         Ok(())
+    }
+
+    pub async fn get_keys(&self, user_id: Uuid) -> Result<KeyBundleResponse, AppError> {
+        let row: Option<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = sqlx::query_as(
+            "SELECT wrapped_dek, wrapped_dek_nonce, recovery_wrapped_dek, recovery_wrapped_dek_nonce FROM users WHERE user_id = $1"
+        )
+        .bind(user_id)
+        .fetch_optional(&self.db)
+        .await?;
+
+        match row {
+            Some((wd, wdn, rwd, rwdn)) => Ok(KeyBundleResponse {
+                wrapped_dek: crypto::encode_b64(&wd),
+                wrapped_dek_nonce: crypto::encode_b64(&wdn),
+                recovery_wrapped_dek: crypto::encode_b64(&rwd),
+                recovery_wrapped_dek_nonce: crypto::encode_b64(&rwdn),
+            }),
+            None => Err(AppError::NotFound),
+        }
     }
 }
 

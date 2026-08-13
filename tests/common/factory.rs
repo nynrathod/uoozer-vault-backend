@@ -13,6 +13,7 @@ pub fn signup_complete_req(email: &str) -> Value {
     json!({
         "email": email,
         "signup_token": "FILLED_BY_TEST",
+                "full_name": "Test User",
         "auth_key": random_b64(32),
         "recovery_auth_key": random_b64(32),
         "wrapped_dek": random_b64(64),
