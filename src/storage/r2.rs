@@ -51,6 +51,8 @@ impl R2Client {
         })
     }
 
+    /// R2 key layout: `{user_id}/{file_id}/{version_id}/{segment_index}/{chunk_index}`
+    /// Flat, never encodes filename or folder name.
     pub fn chunk_key(
         user_id: Uuid,
         file_id: Uuid,
@@ -102,6 +104,7 @@ impl R2Client {
             })
     }
 
+    /// HEAD object — returns ETag if object exists, None if not found.
     pub async fn head_object(&self, key: &str) -> Result<Option<String>, AppError> {
         let resp = self
             .client
@@ -141,6 +144,47 @@ impl R2Client {
             .map_err(|e| {
                 tracing::error!(error = ?e, key, "R2 DELETE failed");
                 AppError::Internal(anyhow::anyhow!("storage deletion failed"))
+            })
+    }
+
+    /// Batch delete up to 1000 objects in a single request.
+    pub async fn delete_objects(&self, keys: &[String]) -> Result<(), AppError> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+
+        let objects: Vec<_> = keys
+            .iter()
+            .map(|k| {
+                aws_sdk_s3::types::ObjectIdentifier::builder()
+                    .key(k)
+                    .build()
+            })
+            .collect::<Result<_, _>>()
+            .map_err(|e| {
+                tracing::error!(error = ?e, "failed to build delete batch");
+                AppError::Internal(anyhow::anyhow!("batch delete build failed"))
+            })?;
+
+        self.client
+            .delete_objects()
+            .bucket(&self.bucket)
+            .delete(
+                aws_sdk_s3::types::Delete::builder()
+                    .set_objects(Some(objects))
+                    .quiet(true)
+                    .build()
+                    .map_err(|e| {
+                        tracing::error!(error = ?e, "failed to build Delete request");
+                        AppError::Internal(anyhow::anyhow!("batch delete build failed"))
+                    })?,
+            )
+            .send()
+            .await
+            .map(|_| ())
+            .map_err(|e| {
+                tracing::error!(error = ?e, "R2 batch DELETE failed");
+                AppError::Internal(anyhow::anyhow!("batch delete failed"))
             })
     }
 }
