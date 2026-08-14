@@ -166,3 +166,9 @@ pub struct ListFilesResponse {
     pub files: Vec<FileResponse>,
     pub total: i64,
 }
+
+#[derive(Debug, serde::Deserialize)]
+pub struct BulkDeleteRequest {
+    pub file_ids: Vec<uuid::Uuid>,
+    pub folder_ids: Vec<uuid::Uuid>,
+}

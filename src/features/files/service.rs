@@ -80,12 +80,14 @@ impl FileService {
              FROM files f
              JOIN file_versions v ON f.current_version_id = v.version_id
              WHERE f.user_id = $1
+               AND f.folder_id IS NOT DISTINCT FROM $3
                AND f.plaintext_blake3 = $2
                AND f.deleted_at IS NULL
                AND v.is_active = true",
         )
         .bind(user_id)
         .bind(&crypto::decode_b64(&req.plaintext_blake3)?)
+        .bind(req.folder_id)
         .fetch_optional(&self.db)
         .await?;
 
@@ -493,152 +495,6 @@ impl FileService {
         Ok(file)
     }
 
-    pub async fn complete_upload(
-        &self,
-        user_id: Uuid,
-        device_id: Uuid,
-        req: CompleteUploadRequest,
-    ) -> Result<(), AppError> {
-        let mut tx = self.db.begin().await?;
-
-        let version: Option<(Uuid, bool, Uuid)> = sqlx::query_as(
-            "SELECT v.version_id, v.is_active, f.user_id
-             FROM file_versions v
-             JOIN files f ON f.file_id = v.file_id
-             WHERE v.version_id = $1 AND f.user_id = $2 AND f.deleted_at IS NULL
-             FOR UPDATE",
-        )
-        .bind(req.version_id)
-        .bind(user_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-
-        let (_, is_active, _) = version.ok_or(AppError::NotFound)?;
-
-        if is_active {
-            return Ok(());
-        }
-
-        let chunks: Vec<(i32, String, Option<String>, Option<chrono::DateTime<Utc>>)> =
-            sqlx::query_as(
-                "SELECT chunk_index, r2_key, r2_etag, uploaded_at
-                 FROM file_chunks
-                 WHERE version_id = $1
-                 ORDER BY chunk_index",
-            )
-            .bind(req.version_id)
-            .fetch_all(&mut *tx)
-            .await?;
-
-        if chunks.is_empty() {
-            return Err(AppError::BadRequest("no chunks found for version".into()));
-        }
-
-        for (chunk_index, r2_key, _, uploaded_at) in &chunks {
-            if let Some(etag) = req.r2_etags.get(chunk_index) {
-                if uploaded_at.is_none() {
-                    // If R2 is configured, verify the chunk exists
-                    if let Some(r2) = &self.r2 {
-                        let head_etag = r2.head_object(r2_key).await?;
-                        if head_etag.is_none() {
-                            tracing::warn!(
-                                chunk_index,
-                                "chunk not found in R2 during complete_upload"
-                            );
-                        }
-                    }
-
-                    sqlx::query(
-                        "UPDATE file_chunks
-                         SET uploaded_at = now(), r2_etag = $1
-                         WHERE version_id = $2 AND chunk_index = $3",
-                    )
-                    .bind(etag)
-                    .bind(req.version_id)
-                    .bind(chunk_index)
-                    .execute(&mut *tx)
-                    .await?;
-                }
-            }
-        }
-
-        let unuploaded_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM file_chunks WHERE version_id = $1 AND uploaded_at IS NULL",
-        )
-        .bind(req.version_id)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        if unuploaded_count > 0 {
-            let missing: Vec<i32> = sqlx::query_scalar(
-                "SELECT chunk_index FROM file_chunks WHERE version_id = $1 AND uploaded_at IS NULL ORDER BY chunk_index"
-            )
-            .bind(req.version_id)
-            .fetch_all(&mut *tx)
-            .await?;
-
-            tx.commit().await?;
-
-            return Err(AppError::BadRequest(format!(
-                "missing chunks: {:?}",
-                missing
-            )));
-        }
-
-        sqlx::query(
-            "UPDATE file_versions SET is_active = false
-             WHERE file_id = (SELECT file_id FROM file_versions WHERE version_id = $1)
-               AND is_active = true
-               AND version_id != $1",
-        )
-        .bind(req.version_id)
-        .execute(&mut *tx)
-        .await?;
-
-        sqlx::query("UPDATE file_versions SET is_active = true WHERE version_id = $1")
-            .bind(req.version_id)
-            .execute(&mut *tx)
-            .await?;
-
-        sqlx::query(
-            "UPDATE files
-             SET current_version_id = $1, updated_at = now()
-             WHERE file_id = (SELECT file_id FROM file_versions WHERE version_id = $1)",
-        )
-        .bind(req.version_id)
-        .execute(&mut *tx)
-        .await?;
-
-        audit::log(
-            &mut *tx,
-            Some(user_id),
-            Some(device_id),
-            "file_upload_completed",
-            &serde_json::json!({ "version_id": req.version_id }),
-        )
-        .await?;
-
-        tx.commit().await?;
-
-        let file_id: Uuid =
-            sqlx::query_scalar("SELECT file_id FROM file_versions WHERE version_id = $1")
-                .bind(req.version_id)
-                .fetch_one(&self.db)
-                .await?;
-
-        self.broadcast(
-            user_id,
-            SyncEvent {
-                event_type: "uploaded".into(),
-                resource_type: "file".into(),
-                resource_id: file_id,
-                payload: serde_json::json!({ "version_id": req.version_id }),
-            },
-        );
-
-        Ok(())
-    }
-
     pub async fn get_download_manifest(
         &self,
         user_id: Uuid,
@@ -720,52 +576,6 @@ impl FileService {
             total_chunks: version.2,
             chunks: chunk_infos,
         })
-    }
-
-    pub async fn delete_file(
-        &self,
-        user_id: Uuid,
-        device_id: Uuid,
-        file_id: Uuid,
-    ) -> Result<(), AppError> {
-        let mut tx = self.db.begin().await?;
-
-        let affected = sqlx::query(
-            "UPDATE files SET deleted_at = now(), updated_at = now()
-             WHERE file_id = $1 AND user_id = $2 AND deleted_at IS NULL",
-        )
-        .bind(file_id)
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-
-        if affected == 0 {
-            return Err(AppError::NotFound);
-        }
-
-        audit::log(
-            &mut *tx,
-            Some(user_id),
-            Some(device_id),
-            "file_deleted",
-            &serde_json::json!({ "file_id": file_id }),
-        )
-        .await?;
-
-        tx.commit().await?;
-
-        self.broadcast(
-            user_id,
-            SyncEvent {
-                event_type: "deleted".into(),
-                resource_type: "file".into(),
-                resource_id: file_id,
-                payload: serde_json::json!({}),
-            },
-        );
-
-        Ok(())
     }
 
     pub async fn list_versions(
@@ -963,26 +773,330 @@ impl FileService {
                 chunk.chunk_index,
             );
 
-            // Check if chunk already exists in R2 (resume support)
-            let existing_etag = r2.head_object(&r2_key).await?;
-            let already_uploaded = existing_etag.is_some();
-
-            let presigned_url = if already_uploaded {
-                String::new() // No need to re-upload
-            } else {
-                r2.presign_put(&r2_key).await?
-            };
+            // NO head_object call here! Saves R2 Class A operations.
+            let presigned_url = r2.presign_put(&r2_key).await?;
 
             upload_urls.push(ChunkUploadUrl {
                 chunk_index: chunk.chunk_index,
                 segment_index: chunk.segment_index,
                 presigned_url,
                 r2_key,
-                already_uploaded,
+                already_uploaded: false, // Client decides this based on its resume state
             });
         }
 
         Ok(upload_urls)
+    }
+
+    pub async fn complete_upload(
+        &self,
+        user_id: Uuid,
+        device_id: Uuid,
+        req: CompleteUploadRequest,
+    ) -> Result<(), AppError> {
+        let mut tx = self.db.begin().await?;
+
+        let version: Option<(Uuid, bool, Uuid)> = sqlx::query_as(
+            "SELECT v.version_id, v.is_active, f.user_id
+             FROM file_versions v
+             JOIN files f ON f.file_id = v.file_id
+             WHERE v.version_id = $1 AND f.user_id = $2 AND f.deleted_at IS NULL
+             FOR UPDATE",
+        )
+        .bind(req.version_id)
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let (_, is_active, _) = version.ok_or(AppError::NotFound)?;
+
+        if is_active {
+            return Ok(());
+        }
+
+        let chunks: Vec<(i32, String, Option<String>, Option<chrono::DateTime<Utc>>)> =
+            sqlx::query_as(
+                "SELECT chunk_index, r2_key, r2_etag, uploaded_at
+                 FROM file_chunks
+                 WHERE version_id = $1
+                 ORDER BY chunk_index",
+            )
+            .bind(req.version_id)
+            .fetch_all(&mut *tx)
+            .await?;
+
+        if chunks.is_empty() {
+            return Err(AppError::BadRequest("no chunks found for version".into()));
+        }
+
+        for (chunk_index, _, _, uploaded_at) in &chunks {
+            if let Some(etag) = req.r2_etags.get(chunk_index) {
+                if uploaded_at.is_none() {
+                    sqlx::query(
+                        "UPDATE file_chunks
+                         SET uploaded_at = now(), r2_etag = $1
+                         WHERE version_id = $2 AND chunk_index = $3",
+                    )
+                    .bind(etag)
+                    .bind(req.version_id)
+                    .bind(chunk_index)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+            }
+        }
+
+        let unuploaded_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM file_chunks WHERE version_id = $1 AND uploaded_at IS NULL",
+        )
+        .bind(req.version_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        if unuploaded_count > 0 {
+            let missing: Vec<i32> = sqlx::query_scalar(
+                "SELECT chunk_index FROM file_chunks WHERE version_id = $1 AND uploaded_at IS NULL ORDER BY chunk_index"
+            )
+            .bind(req.version_id)
+            .fetch_all(&mut *tx)
+            .await?;
+
+            tx.commit().await?;
+
+            return Err(AppError::BadRequest(format!(
+                "missing chunks: {:?}",
+                missing
+            )));
+        }
+
+        sqlx::query(
+            "UPDATE file_versions SET is_active = false
+             WHERE file_id = (SELECT file_id FROM file_versions WHERE version_id = $1)
+               AND is_active = true
+               AND version_id != $1",
+        )
+        .bind(req.version_id)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query("UPDATE file_versions SET is_active = true WHERE version_id = $1")
+            .bind(req.version_id)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query(
+            "UPDATE files
+             SET current_version_id = $1, updated_at = now()
+             WHERE file_id = (SELECT file_id FROM file_versions WHERE version_id = $1)",
+        )
+        .bind(req.version_id)
+        .execute(&mut *tx)
+        .await?;
+
+        audit::log(
+            &mut *tx,
+            Some(user_id),
+            Some(device_id),
+            "file_upload_completed",
+            &serde_json::json!({ "version_id": req.version_id }),
+        )
+        .await?;
+
+        tx.commit().await?;
+
+        let file_id: Uuid =
+            sqlx::query_scalar("SELECT file_id FROM file_versions WHERE version_id = $1")
+                .bind(req.version_id)
+                .fetch_one(&self.db)
+                .await?;
+
+        self.broadcast(
+            user_id,
+            SyncEvent {
+                event_type: "uploaded".into(),
+                resource_type: "file".into(),
+                resource_id: file_id,
+                payload: serde_json::json!({ "version_id": req.version_id }),
+            },
+        );
+
+        Ok(())
+    }
+
+    pub async fn delete_file(
+        &self,
+        user_id: Uuid,
+        device_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<(), AppError> {
+        let r2_keys: Vec<String> = sqlx::query_scalar(
+            "SELECT c.r2_key FROM file_chunks c
+             JOIN file_versions v ON c.version_id = v.version_id
+             WHERE v.file_id = $1",
+        )
+        .bind(file_id)
+        .fetch_all(&self.db)
+        .await?;
+
+        let mut tx = self.db.begin().await?;
+
+        let affected = sqlx::query(
+            "UPDATE files SET deleted_at = now(), updated_at = now()
+             WHERE file_id = $1 AND user_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(file_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+        if affected == 0 {
+            return Err(AppError::NotFound);
+        }
+
+        audit::log(
+            &mut *tx,
+            Some(user_id),
+            Some(device_id),
+            "file_deleted",
+            &serde_json::json!({ "file_id": file_id }),
+        )
+        .await?;
+
+        tx.commit().await?;
+
+        if let Some(r2) = &self.r2 {
+            if !r2_keys.is_empty() {
+                if let Err(e) = r2.delete_objects(&r2_keys).await {
+                    tracing::error!(error = ?e, "failed to delete R2 objects for file {}", file_id);
+                }
+            }
+        }
+
+        self.broadcast(
+            user_id,
+            SyncEvent {
+                event_type: "deleted".into(),
+                resource_type: "file".into(),
+                resource_id: file_id,
+                payload: serde_json::json!({}),
+            },
+        );
+
+        Ok(())
+    }
+
+    pub async fn bulk_delete(
+        &self,
+        user_id: Uuid,
+        device_id: Uuid,
+        req: BulkDeleteRequest,
+    ) -> Result<(), AppError> {
+        let mut tx = self.db.begin().await?;
+        let mut r2_keys_to_delete = Vec::new();
+
+        if !req.file_ids.is_empty() {
+            let chunk_keys: Vec<String> = sqlx::query_scalar(
+                "SELECT c.r2_key FROM file_chunks c
+                 JOIN file_versions v ON c.version_id = v.version_id
+                 JOIN files f ON v.file_id = f.file_id
+                 WHERE f.file_id = ANY($1) AND f.user_id = $2",
+            )
+            .bind(&req.file_ids)
+            .bind(user_id)
+            .fetch_all(&mut *tx)
+            .await?;
+
+            r2_keys_to_delete.extend(chunk_keys);
+
+            sqlx::query(
+                "UPDATE files SET deleted_at = now(), updated_at = now() 
+                 WHERE file_id = ANY($1) AND user_id = $2 AND deleted_at IS NULL",
+            )
+            .bind(&req.file_ids)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        if !req.folder_ids.is_empty() {
+            let all_folder_ids: Vec<Uuid> = sqlx::query_scalar(
+                r#"
+                WITH RECURSIVE descendants AS (
+                    SELECT folder_id FROM folders WHERE folder_id = ANY($1) AND user_id = $2 AND deleted_at IS NULL
+                    UNION ALL
+                    SELECT f.folder_id FROM folders f
+                    INNER JOIN descendants d ON f.parent_folder_id = d.folder_id
+                    WHERE f.deleted_at IS NULL
+                )
+                SELECT folder_id FROM descendants
+                "#,
+            )
+            .bind(&req.folder_ids)
+            .bind(user_id)
+            .fetch_all(&mut *tx)
+            .await?;
+
+            let files_in_folders: Vec<Uuid> = sqlx::query_scalar(
+                "SELECT file_id FROM files WHERE folder_id = ANY($1) AND user_id = $2 AND deleted_at IS NULL",
+            )
+            .bind(&all_folder_ids)
+            .bind(user_id)
+            .fetch_all(&mut *tx)
+            .await?;
+
+            if !files_in_folders.is_empty() {
+                let chunk_keys: Vec<String> = sqlx::query_scalar(
+                    "SELECT c.r2_key FROM file_chunks c
+                     JOIN file_versions v ON c.version_id = v.version_id
+                     JOIN files f ON v.file_id = f.file_id
+                     WHERE f.file_id = ANY($1) AND f.user_id = $2",
+                )
+                .bind(&files_in_folders)
+                .bind(user_id)
+                .fetch_all(&mut *tx)
+                .await?;
+
+                r2_keys_to_delete.extend(chunk_keys);
+
+                sqlx::query(
+                    "UPDATE files SET deleted_at = now(), updated_at = now() WHERE file_id = ANY($1) AND user_id = $2",
+                )
+                .bind(&files_in_folders)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+
+            sqlx::query(
+                "UPDATE folders SET deleted_at = now() WHERE folder_id = ANY($1) AND user_id = $2",
+            )
+            .bind(&all_folder_ids)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        audit::log(
+            &mut *tx,
+            Some(user_id),
+            Some(device_id),
+            "bulk_delete",
+            &serde_json::json!({ "file_ids": req.file_ids, "folder_ids": req.folder_ids }),
+        )
+        .await?;
+
+        tx.commit().await?;
+
+        if let Some(r2) = &self.r2 {
+            if !r2_keys_to_delete.is_empty() {
+                if let Err(e) = r2.delete_objects(&r2_keys_to_delete).await {
+                    tracing::error!(error = ?e, "failed to batch delete R2 objects during bulk delete");
+                }
+            }
+        }
+
+        Ok(())
     }
 
     async fn verify_folder_ownership(

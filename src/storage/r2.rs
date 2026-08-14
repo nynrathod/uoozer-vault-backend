@@ -125,10 +125,10 @@ impl R2Client {
                 Ok(None)
             }
             Err(e) => {
-                tracing::error!(error = ?e, key, "R2 HEAD failed");
-                Err(AppError::ServiceUnavailable(
-                    "storage verification failed".to_string(),
-                ))
+                // FIX: If R2/MinIO is down or refuses connection, log it and return None.
+                // This allows the upload to proceed with a fresh presigned URL instead of failing with 503.
+                tracing::warn!(error = ?e, key, "R2 HEAD failed, assuming object does not exist");
+                Ok(None)
             }
         }
     }

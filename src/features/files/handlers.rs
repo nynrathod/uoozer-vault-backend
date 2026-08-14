@@ -94,6 +94,7 @@ pub async fn update_file(
 pub async fn complete_upload(
     State(state): State<AppState>,
     user: AuthenticatedUser,
+    Path(file_id): Path<Uuid>,
     Json(req): Json<CompleteUploadRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let svc = FileService::new(&state);
@@ -144,5 +145,15 @@ pub async fn restore_version(
     let svc = FileService::new(&state);
     svc.restore_version(user.user_id, user.device_id, file_id, version_id)
         .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn bulk_delete(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Json(req): Json<BulkDeleteRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FileService::new(&state);
+    svc.bulk_delete(user.user_id, user.device_id, req).await?;
     Ok(StatusCode::NO_CONTENT)
 }

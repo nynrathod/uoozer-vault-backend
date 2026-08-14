@@ -22,6 +22,7 @@ pub fn router() -> Router<AppState> {
                 .patch(handlers::update_file)
                 .delete(handlers::delete_file),
         )
+        .route("/files/bulk-delete", post(handlers::bulk_delete))
         .route(
             "/files/{file_id}/versions",
             post(handlers::create_version)
