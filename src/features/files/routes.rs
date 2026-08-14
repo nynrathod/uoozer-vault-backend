@@ -1,6 +1,5 @@
 use axum::{
     Router,
-    body::Body,
     extract::DefaultBodyLimit,
     routing::{get, post},
 };

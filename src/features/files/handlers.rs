@@ -94,7 +94,7 @@ pub async fn update_file(
 pub async fn complete_upload(
     State(state): State<AppState>,
     user: AuthenticatedUser,
-    Path(file_id): Path<Uuid>,
+    Path(_file_id): Path<Uuid>,
     Json(req): Json<CompleteUploadRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let svc = FileService::new(&state);

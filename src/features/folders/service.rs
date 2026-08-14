@@ -138,13 +138,11 @@ impl FolderService {
         let encrypted_metadata = crypto::decode_b64(&req.encrypted_metadata)?;
 
         if let Some(new_parent) = req.parent_folder_id {
-            // Check for cycles using the recursive CTE
             if self.is_descendant_or_self(folder_id, new_parent).await? {
                 return Err(AppError::BadRequest(
                     "cannot move folder into itself or its own descendant".to_string(),
                 ));
             }
-            // Verify ownership of the new parent
             self.verify_folder_ownership(new_parent, user_id).await?;
         }
 
@@ -197,7 +195,7 @@ impl FolderService {
         Ok(())
     }
 
-    async fn verify_folder_ownership(
+    pub async fn verify_folder_ownership(
         &self,
         folder_id: Uuid,
         user_id: Uuid,
@@ -213,6 +211,62 @@ impl FolderService {
         if exists.is_none() {
             return Err(AppError::NotFound);
         }
+
+        Ok(())
+    }
+
+    pub async fn get_descendant_folder_ids<'e, E>(
+        executor: E,
+        folder_ids: &[Uuid],
+        user_id: Uuid,
+    ) -> Result<Vec<Uuid>, AppError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
+        if folder_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            r#"
+            WITH RECURSIVE descendants AS (
+                SELECT folder_id FROM folders
+                WHERE folder_id = ANY($1) AND user_id = $2 AND deleted_at IS NULL
+                UNION ALL
+                SELECT f.folder_id FROM folders f
+                INNER JOIN descendants d ON f.parent_folder_id = d.folder_id
+                WHERE f.deleted_at IS NULL
+            )
+            SELECT folder_id FROM descendants
+            "#,
+        )
+        .bind(folder_ids)
+        .bind(user_id)
+        .fetch_all(executor)
+        .await?;
+
+        Ok(ids)
+    }
+
+    pub async fn soft_delete_many<'e, E>(
+        executor: E,
+        folder_ids: &[Uuid],
+        user_id: Uuid,
+    ) -> Result<(), AppError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
+        if folder_ids.is_empty() {
+            return Ok(());
+        }
+
+        sqlx::query(
+            "UPDATE folders SET deleted_at = now() WHERE folder_id = ANY($1) AND user_id = $2",
+        )
+        .bind(folder_ids)
+        .bind(user_id)
+        .execute(executor)
+        .await?;
 
         Ok(())
     }

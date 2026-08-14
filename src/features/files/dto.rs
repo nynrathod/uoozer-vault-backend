@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
+pub use crate::storage::dto::{ChunkUploadUrl, DownloadChunkInfo};
+
 // ── Create file (initiate upload) ─────────────────────────────
 
 #[derive(Debug, Deserialize, Validate)]
@@ -45,15 +47,6 @@ pub struct CreateFileResponse {
     pub version_id: Uuid,
     pub deduplicated: bool,
     pub upload_urls: Vec<ChunkUploadUrl>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct ChunkUploadUrl {
-    pub chunk_index: i32,
-    pub segment_index: i32,
-    pub presigned_url: String,
-    pub r2_key: String,
-    pub already_uploaded: bool,
 }
 
 // ── File info ─────────────────────────────────────────────────
@@ -119,14 +112,6 @@ pub struct DownloadManifestResponse {
     pub total_size: i64,
     pub total_chunks: i32,
     pub chunks: Vec<DownloadChunkInfo>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct DownloadChunkInfo {
-    pub chunk_index: i32,
-    pub segment_index: i32,
-    pub chunk_size: i64,
-    pub presigned_url: String,
 }
 
 // ── Versions ──────────────────────────────────────────────────

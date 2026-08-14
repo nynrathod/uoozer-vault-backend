@@ -17,7 +17,7 @@ pub async fn get_resume_info(
     user: AuthenticatedUser,
     Path(version_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
-    let svc = ChunkService::new(state.db, state.r2.clone());
+    let svc = ChunkService::new(state.db, state.storage.clone());
     let info = svc.get_resume_info(user.user_id, version_id).await?;
     Ok(Json(info))
 }
@@ -27,7 +27,7 @@ pub async fn verify_chunk(
     user: AuthenticatedUser,
     Json(req): Json<VerifyChunkRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let svc = ChunkService::new(state.db, state.r2.clone());
+    let svc = ChunkService::new(state.db, state.storage.clone());
     let resp = svc.verify_chunk(user.user_id, req).await?;
     Ok(Json(resp))
 }
