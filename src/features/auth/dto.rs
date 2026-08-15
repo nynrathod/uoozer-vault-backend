@@ -91,3 +91,17 @@ pub struct KeyBundleResponse {
     pub recovery_wrapped_dek: String,
     pub recovery_wrapped_dek_nonce: String,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateProfileRequest {
+    pub full_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct UserProfileResponse {
+    pub id: uuid::Uuid,
+    pub email: String,
+    pub full_name: String,
+    pub avatar_url: Option<String>,
+}

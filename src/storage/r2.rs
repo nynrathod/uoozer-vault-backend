@@ -187,4 +187,21 @@ impl R2Client {
                 AppError::Internal(anyhow::anyhow!("batch delete failed"))
             })
     }
+
+    pub async fn upload_object(&self, key: &str, data: Vec<u8>) -> Result<(), AppError> {
+        use aws_sdk_s3::primitives::ByteStream;
+
+        self.client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .body(ByteStream::from(data))
+            .send()
+            .await
+            .map(|_| ())
+            .map_err(|e| {
+                tracing::error!(error = ?e, key, "R2 PUT failed");
+                AppError::ServiceUnavailable("storage upload failed".to_string())
+            })
+    }
 }

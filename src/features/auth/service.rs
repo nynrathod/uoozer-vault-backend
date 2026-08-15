@@ -648,6 +648,77 @@ impl AuthService {
             None => Err(AppError::NotFound),
         }
     }
+
+    pub async fn update_profile(
+        &self,
+        user_id: Uuid,
+        req: super::dto::UpdateProfileRequest,
+    ) -> Result<(), AppError> {
+        sqlx::query(
+            "UPDATE users 
+             SET full_name = COALESCE($1, full_name),
+                 avatar_url = COALESCE($2, avatar_url),
+                 updated_at = now()
+             WHERE user_id = $3",
+        )
+        .bind(req.full_name)
+        .bind(req.avatar_url)
+        .bind(user_id)
+        .execute(&self.db)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn get_user_profile(
+        &self,
+        user_id: Uuid,
+    ) -> Result<super::dto::UserProfileResponse, AppError> {
+        let row: Option<(Uuid, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT user_id, email, full_name, avatar_url FROM users WHERE user_id = $1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.db)
+        .await?;
+
+        match row {
+            Some((id, email, full_name, avatar_url)) => Ok(super::dto::UserProfileResponse {
+                id,
+                email,
+                full_name,
+                avatar_url,
+            }),
+            None => Err(AppError::NotFound),
+        }
+    }
+
+    pub async fn update_avatar_url(
+        &self,
+        user_id: Uuid,
+        avatar_url: String,
+    ) -> Result<(), AppError> {
+        sqlx::query("UPDATE users SET avatar_url = $1, updated_at = now() WHERE user_id = $2")
+            .bind(avatar_url)
+            .bind(user_id)
+            .execute(&self.db)
+            .await?;
+        Ok(())
+    }
+    pub async fn delete_avatar(
+        &self,
+        user_id: Uuid,
+        r2: &Arc<crate::storage::r2::R2Client>,
+    ) -> Result<(), AppError> {
+        let key = format!("avatars/{}", user_id);
+        r2.delete_object(&key).await?;
+
+        sqlx::query("UPDATE users SET avatar_url = NULL, updated_at = now() WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&self.db)
+            .await?;
+
+        Ok(())
+    }
 }
 
 const DUMMY_BCRYPT_HASH: &str = "$2b$12$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy";

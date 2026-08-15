@@ -1,7 +1,8 @@
 use axum::Json;
 use axum::body::to_bytes;
-use axum::extract::State;
+use axum::extract::{Multipart, State};
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use validator::Validate;
 
 use crate::app_state::AppState;
@@ -111,4 +112,76 @@ pub async fn get_keys(
     let svc = AuthService::new(&state);
     let keys = svc.get_keys(user.user_id).await?;
     Ok(Json(keys))
+}
+
+pub async fn update_profile(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Json(req): Json<super::dto::UpdateProfileRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = AuthService::new(&state);
+    svc.update_profile(user.user_id, req).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn get_me(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = AuthService::new(&state);
+    let profile = svc.get_user_profile(user.user_id).await?;
+    Ok(Json(profile))
+}
+
+pub async fn upload_avatar(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    mut multipart: Multipart,
+) -> Result<impl IntoResponse, AppError> {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(e.to_string()))?
+    {
+        if field.name() == Some("file") {
+            let data = field
+                .bytes()
+                .await
+                .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+            if let Some(r2) = &state.r2 {
+                let key = format!("avatars/{}", user.user_id);
+
+                r2.upload_object(&key, data.to_vec()).await?;
+
+                let url = r2.presign_get(&key).await?;
+
+                let svc = AuthService::new(&state);
+                svc.update_avatar_url(user.user_id, url.clone()).await?;
+
+                return Ok(Json(serde_json::json!({ "avatar_url": url })));
+            } else {
+                return Err(AppError::ServiceUnavailable(
+                    "Storage not configured".into(),
+                ));
+            }
+        }
+    }
+    Err(AppError::BadRequest("No file uploaded".into()))
+}
+
+pub async fn delete_avatar(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = AuthService::new(&state);
+
+    if let Some(r2) = &state.r2 {
+        svc.delete_avatar(user.user_id, r2).await?;
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(AppError::ServiceUnavailable(
+            "Storage not configured".into(),
+        ))
+    }
 }

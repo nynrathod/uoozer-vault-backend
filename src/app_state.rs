@@ -34,6 +34,7 @@ pub struct AppState {
     pub config: Arc<Settings>,
     pub db: DbPool,
     pub jwt_keys: Arc<JwtKeyPair>,
+    pub r2: Option<Arc<R2Client>>,
     pub storage: StorageService,
     pub sse_channels: Arc<DashMap<Uuid, broadcast::Sender<SyncEvent>>>,
     pub auth_rate_limiter: Arc<IpRateLimiter>,
@@ -59,7 +60,7 @@ impl AppState {
             None
         };
 
-        let storage = StorageService::new(r2);
+        let storage = StorageService::new(r2.clone());
 
         let sse_channels = Arc::new(DashMap::new());
         let auth_rate_limiter = Arc::new(IpRateLimiter::new(config.rate_limit.auth_per_minute));
@@ -69,6 +70,7 @@ impl AppState {
             config,
             db,
             jwt_keys,
+            r2,
             storage,
             sse_channels,
             auth_rate_limiter,

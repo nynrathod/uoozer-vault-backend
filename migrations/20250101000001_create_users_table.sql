@@ -42,3 +42,4 @@ CREATE TABLE users (
 );
 
 CREATE INDEX idx_users_email_normalized ON users (email_normalized);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
