@@ -214,3 +214,22 @@ pub async fn cancel_upload(
     svc.cancel_upload(user.user_id, file_id, version_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+pub async fn cleanup_orphaned_uploads(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FileService::new(&state);
+    let deleted = svc.cleanup_orphaned_versions(24).await?;
+    Ok(Json(serde_json::json!({ "deleted": deleted })))
+}
+
+pub async fn bulk_cancel_uploads(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Json(req): Json<BulkCancelRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FileService::new(&state);
+    let cancelled = svc.bulk_cancel_uploads(user.user_id, req.uploads).await?;
+    Ok(Json(serde_json::json!({ "cancelled": cancelled })))
+}

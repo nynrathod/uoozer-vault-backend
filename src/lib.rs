@@ -14,6 +14,14 @@ use tower_http::{
 };
 
 pub async fn run(state: AppState, addr: SocketAddr) -> anyhow::Result<()> {
+    let cleanup_db = state.db.clone();
+    let cleanup_storage = state.storage.clone();
+    tokio::spawn(async move {
+        let service =
+            crate::features::files::cleanup::CleanupService::new(cleanup_db, cleanup_storage);
+        service.run_periodic_cleanup(60, 24).await;
+    });
+
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;

@@ -28,3 +28,12 @@ pub struct ResumeInfoResponse {
     /// `None` if R2 is not configured (dev/test mode).
     pub upload_urls: Option<Vec<crate::storage::dto::ChunkUploadUrl>>,
 }
+
+#[derive(Debug, Serialize)]
+pub struct CompletenessResponse {
+    pub version_id: Uuid,
+    pub total_chunks: i32,
+    pub uploaded_chunks: i32,
+    pub missing_chunks: i32,
+    pub is_complete: bool,
+}

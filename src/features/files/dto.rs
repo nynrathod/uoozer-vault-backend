@@ -159,3 +159,14 @@ pub struct BulkDeleteRequest {
     pub file_ids: Vec<uuid::Uuid>,
     pub folder_ids: Vec<uuid::Uuid>,
 }
+
+#[derive(Debug, serde::Deserialize)]
+pub struct BulkCancelRequest {
+    pub uploads: Vec<CancelTarget>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct CancelTarget {
+    pub file_id: Uuid,
+    pub version_id: Uuid,
+}

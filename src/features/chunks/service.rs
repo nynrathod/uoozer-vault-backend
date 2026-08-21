@@ -146,4 +146,44 @@ impl ChunkService {
             r2_etag: Some(req.r2_etag),
         })
     }
+
+    pub async fn precheck_version_completeness(
+        &self,
+        user_id: Uuid,
+        version_id: Uuid,
+    ) -> Result<CompletenessResponse, AppError> {
+        let version: Option<(i32,)> = sqlx::query_as(
+            "SELECT v.total_chunks FROM file_versions v 
+         JOIN files f ON f.file_id = v.file_id 
+         WHERE v.version_id = $1 AND f.user_id = $2 AND f.deleted_at IS NULL",
+        )
+        .bind(version_id)
+        .bind(user_id)
+        .fetch_optional(&self.db)
+        .await?;
+
+        let total_chunks = version.ok_or(AppError::NotFound)?.0;
+
+        let missing_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM file_chunks WHERE version_id = $1 AND uploaded_at IS NULL",
+        )
+        .bind(version_id)
+        .fetch_one(&self.db)
+        .await?;
+
+        let uploaded_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM file_chunks WHERE version_id = $1 AND uploaded_at IS NOT NULL",
+        )
+        .bind(version_id)
+        .fetch_one(&self.db)
+        .await?;
+
+        Ok(CompletenessResponse {
+            version_id,
+            total_chunks,
+            uploaded_chunks: uploaded_count as i32,
+            missing_chunks: missing_count as i32,
+            is_complete: missing_count == 0,
+        })
+    }
 }

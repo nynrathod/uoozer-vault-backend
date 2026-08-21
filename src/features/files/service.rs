@@ -986,4 +986,102 @@ impl FileService {
 
         Ok(())
     }
+
+    pub async fn bulk_cancel_uploads(
+        &self,
+        user_id: Uuid,
+        uploads: Vec<crate::features::files::dto::CancelTarget>,
+    ) -> Result<usize, AppError> {
+        let mut cancelled = 0usize;
+        for target in uploads {
+            match self
+                .cancel_upload(user_id, target.file_id, target.version_id)
+                .await
+            {
+                Ok(()) => cancelled += 1,
+                Err(e) => tracing::warn!(error = ?e, "failed to cancel individual upload"),
+            }
+        }
+        Ok(cancelled)
+    }
+
+    pub async fn cleanup_orphaned_versions(
+        &self,
+        older_than_hours: i64,
+    ) -> Result<usize, AppError> {
+        let cutoff = Utc::now() - chrono::Duration::hours(older_than_hours);
+
+        let r2_keys: Vec<String> = sqlx::query_scalar(
+            r#"
+        SELECT c.r2_key
+        FROM file_chunks c
+        JOIN file_versions v ON c.version_id = v.version_id
+        WHERE v.is_active = false
+          AND v.created_at < $1
+          AND NOT EXISTS (
+            SELECT 1 FROM files f WHERE f.current_version_id = v.version_id
+          )
+        "#,
+        )
+        .bind(cutoff)
+        .fetch_all(&self.db)
+        .await?;
+
+        let key_count = r2_keys.len();
+        self.storage.delete_objects_best_effort(&r2_keys).await;
+
+        let result = sqlx::query(
+            r#"
+        DELETE FROM file_versions
+        WHERE is_active = false
+          AND created_at < $1
+          AND NOT EXISTS (
+            SELECT 1 FROM files f WHERE f.current_version_id = file_versions.version_id
+          )
+        "#,
+        )
+        .bind(cutoff)
+        .execute(&self.db)
+        .await?;
+
+        tracing::info!(
+            deleted_versions = result.rows_affected(),
+            deleted_r2_objects = key_count,
+            "orphaned upload cleanup completed"
+        );
+
+        Ok(result.rows_affected() as usize)
+    }
+
+    pub async fn verify_download_completeness(
+        &self,
+        user_id: Uuid,
+        file_id: Uuid,
+        version_id: Option<Uuid>,
+    ) -> Result<bool, AppError> {
+        let target_version_id = match version_id {
+            Some(vid) => vid,
+            None => {
+                let row: Option<(Option<Uuid>,)> = sqlx::query_as(
+                "SELECT current_version_id FROM files WHERE file_id = $1 AND user_id = $2 AND deleted_at IS NULL",
+            )
+            .bind(file_id)
+            .bind(user_id)
+            .fetch_optional(&self.db)
+            .await?;
+                row.ok_or(AppError::NotFound)?
+                    .0
+                    .ok_or(AppError::BadRequest("no active version".into()))?
+            }
+        };
+
+        let missing: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM file_chunks WHERE version_id = $1 AND uploaded_at IS NULL",
+        )
+        .bind(target_version_id)
+        .fetch_one(&self.db)
+        .await?;
+
+        Ok(missing == 0)
+    }
 }
