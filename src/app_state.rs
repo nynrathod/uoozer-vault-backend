@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
@@ -8,7 +9,7 @@ use uuid::Uuid;
 use crate::config::Settings;
 use crate::core::crypto::JwtKeyPair;
 use crate::core::db::DbPool;
-use crate::core::middleware::IpRateLimiter;
+use crate::core::middleware::{IpRateLimiter, UserRateLimiter};
 use crate::storage::StorageService;
 use crate::storage::r2::R2Client;
 
@@ -23,6 +24,7 @@ pub struct PendingSignup {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SyncEvent {
+    pub seq: u64,
     pub event_type: String,
     pub resource_type: String,
     pub resource_id: Uuid,
@@ -38,8 +40,9 @@ pub struct AppState {
     pub storage: StorageService,
     pub sse_channels: Arc<DashMap<Uuid, broadcast::Sender<SyncEvent>>>,
     pub auth_rate_limiter: Arc<IpRateLimiter>,
-    pub api_rate_limiter: Arc<IpRateLimiter>,
+    pub api_rate_limiter: Arc<UserRateLimiter>,
     pub pending_signups: Arc<DashMap<String, PendingSignup>>,
+    pub event_seq: Arc<AtomicU64>,
 }
 
 impl AppState {
@@ -64,7 +67,7 @@ impl AppState {
 
         let sse_channels = Arc::new(DashMap::new());
         let auth_rate_limiter = Arc::new(IpRateLimiter::new(config.rate_limit.auth_per_minute));
-        let api_rate_limiter = Arc::new(IpRateLimiter::new(config.rate_limit.api_per_minute));
+        let api_rate_limiter = Arc::new(UserRateLimiter::new(config.rate_limit.api_per_minute));
 
         Ok(Self {
             config,
@@ -76,6 +79,7 @@ impl AppState {
             auth_rate_limiter,
             api_rate_limiter,
             pending_signups: Arc::new(DashMap::new()),
+            event_seq: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -98,7 +102,11 @@ impl AppState {
         }
     }
 
-    pub fn broadcast_sync(&self, user_id: Uuid, event: SyncEvent) {
+    pub fn broadcast_sync(&self, user_id: Uuid, mut event: SyncEvent) {
+        let seq = self
+            .event_seq
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        event.seq = seq;
         if let Some(tx) = self.sse_channels.get(&user_id) {
             let _ = tx.send(event);
         }

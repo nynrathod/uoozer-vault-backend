@@ -7,7 +7,7 @@ pub use crate::storage::dto::{ChunkUploadUrl, DownloadChunkInfo};
 
 // ── Create file (initiate upload) ─────────────────────────────
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Serialize, Validate)]
 pub struct CreateFileRequest {
     /// None = root level. Some(id) = inside folder.
     pub folder_id: Option<Uuid>,
@@ -169,4 +169,36 @@ pub struct BulkCancelRequest {
 pub struct CancelTarget {
     pub file_id: Uuid,
     pub version_id: Uuid,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct BulkCreateFilesRequest {
+    #[validate(length(min = 1, max = 100))]
+    pub files: Vec<CreateFileRequest>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BulkCreateFilesResponse {
+    pub results: Vec<CreateFileResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BulkCompleteUploadItem {
+    pub file_id: Uuid,
+    pub version_id: Uuid,
+    pub r2_etags: std::collections::HashMap<i32, String>,
+    pub plaintext_blake3: String,
+    pub encryption_header: String,
+    pub chunk_hashes: std::collections::HashMap<i32, String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BulkCompleteUploadRequest {
+    pub uploads: Vec<BulkCompleteUploadItem>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BulkCompleteUploadResponse {
+    pub completed: Vec<Uuid>,
+    pub failed: Vec<Uuid>,
 }

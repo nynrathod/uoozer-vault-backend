@@ -1,3 +1,4 @@
+use super::dto::BulkCreateFoldersRequest;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -76,4 +77,17 @@ pub async fn delete_folder(
     let svc = FolderService::new(state.db.clone());
     svc.delete_folder(user.user_id, folder_id, &state).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn create_folders_bulk(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Json(req): Json<BulkCreateFoldersRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    req.validate()?;
+    let svc = FolderService::new(state.db.clone());
+    let folders = svc
+        .create_folders_bulk(user.user_id, req.folders, &state)
+        .await?;
+    Ok((StatusCode::CREATED, Json(folders)))
 }

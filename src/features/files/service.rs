@@ -443,6 +443,7 @@ impl FileService {
         self.broadcast(
             user_id,
             SyncEvent {
+                seq: 0,
                 event_type: "updated".into(),
                 resource_type: "file".into(),
                 resource_id: file_id,
@@ -593,6 +594,7 @@ impl FileService {
         self.broadcast(
             user_id,
             SyncEvent {
+                seq: 0,
                 event_type: "version_restored".into(),
                 resource_type: "file".into(),
                 resource_id: file_id,
@@ -775,6 +777,7 @@ impl FileService {
         self.broadcast(
             user_id,
             SyncEvent {
+                seq: 0,
                 event_type: "uploaded".into(),
                 resource_type: "file".into(),
                 resource_id: file_id,
@@ -1083,5 +1086,129 @@ impl FileService {
         .await?;
 
         Ok(missing == 0)
+    }
+
+    pub async fn bulk_init_uploads(
+        &self,
+        user_id: Uuid,
+        device_id: Uuid,
+        reqs: Vec<CreateFileRequest>,
+    ) -> Result<Vec<CreateFileResponse>, AppError> {
+        let mut results = Vec::with_capacity(reqs.len());
+        let mut tx = self.db.begin().await?;
+
+        for req in reqs {
+            let metadata_nonce = crypto::decode_b64(&req.metadata_nonce)?;
+            if metadata_nonce.len() != 24 {
+                return Err(AppError::BadRequest(
+                    "metadata nonce must be 24 bytes".into(),
+                ));
+            }
+            let encrypted_metadata = crypto::decode_b64(&req.encrypted_metadata)?;
+
+            let placeholder_hash = vec![0u8; 32];
+            let placeholder_header = vec![0u8; 24];
+
+            let file_id = Uuid::new_v4();
+            let version_id = Uuid::new_v4();
+
+            sqlx::query("INSERT INTO files (file_id, user_id, folder_id, encrypted_metadata, metadata_nonce, plaintext_blake3, total_size, current_version_id) VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)")
+            .bind(file_id).bind(user_id).bind(req.folder_id)
+            .bind(&encrypted_metadata).bind(&metadata_nonce).bind(&placeholder_hash).bind(req.total_size)
+            .execute(&mut *tx).await?;
+
+            sqlx::query("INSERT INTO file_versions (version_id, file_id, version_number, encryption_header, total_size, total_chunks, plaintext_blake3, created_by_device_id, is_active) VALUES ($1, $2, 1, $3, $4, $5, $6, $7, false)")
+            .bind(version_id).bind(file_id).bind(&placeholder_header).bind(req.total_size).bind(req.total_chunks)
+            .bind(&placeholder_hash).bind(device_id)
+            .execute(&mut *tx).await?;
+
+            sqlx::query("UPDATE files SET current_version_id = $1 WHERE file_id = $2")
+                .bind(version_id)
+                .bind(file_id)
+                .execute(&mut *tx)
+                .await?;
+
+            let mut chunk_indices = Vec::new();
+            for chunk in &req.chunks {
+                let r2_key = StorageService::chunk_key(
+                    user_id,
+                    file_id,
+                    version_id,
+                    chunk.segment_index,
+                    chunk.chunk_index,
+                );
+                sqlx::query("INSERT INTO file_chunks (version_id, chunk_index, segment_index, chunk_size, chunk_blake3, r2_key) VALUES ($1, $2, $3, $4, $5, $6)")
+                .bind(version_id).bind(chunk.chunk_index).bind(chunk.segment_index)
+                .bind(chunk.chunk_size).bind(&placeholder_hash).bind(&r2_key)
+                .execute(&mut *tx).await?;
+                chunk_indices.push((chunk.chunk_index, chunk.segment_index));
+            }
+
+            let upload_urls = self
+                .storage
+                .generate_upload_urls(user_id, file_id, version_id, &chunk_indices)
+                .await?;
+            results.push(CreateFileResponse {
+                file_id,
+                version_id,
+                deduplicated: false,
+                upload_urls,
+            });
+        }
+
+        tx.commit().await?;
+        Ok(results)
+    }
+
+    pub async fn bulk_complete_uploads(
+        &self,
+        user_id: Uuid,
+        device_id: Uuid,
+        uploads: Vec<crate::features::files::dto::BulkCompleteUploadItem>,
+    ) -> Result<crate::features::files::dto::BulkCompleteUploadResponse, AppError> {
+        let mut completed = Vec::new();
+        let mut failed = Vec::new();
+
+        for item in uploads {
+            let plaintext_blake3 = crypto::decode_b64(&item.plaintext_blake3)?;
+            let encryption_header = crypto::decode_b64(&item.encryption_header)?;
+
+            sqlx::query("UPDATE file_versions SET encryption_header = $1, plaintext_blake3 = $2 WHERE version_id = $3")
+            .bind(&encryption_header).bind(&plaintext_blake3).bind(item.version_id)
+            .execute(&self.db).await?;
+
+            sqlx::query("UPDATE files SET plaintext_blake3 = $1 WHERE current_version_id = $2")
+                .bind(&plaintext_blake3)
+                .bind(item.version_id)
+                .execute(&self.db)
+                .await?;
+
+            for (chunk_index, chunk_hash_b64) in &item.chunk_hashes {
+                let hash_bytes = crypto::decode_b64(chunk_hash_b64)?;
+                sqlx::query("UPDATE file_chunks SET chunk_blake3 = $1 WHERE version_id = $2 AND chunk_index = $3")
+                .bind(&hash_bytes).bind(item.version_id).bind(chunk_index)
+                .execute(&self.db).await?;
+            }
+
+            match self
+                .complete_upload(
+                    user_id,
+                    device_id,
+                    CompleteUploadRequest {
+                        version_id: item.version_id,
+                        r2_etags: item.r2_etags,
+                    },
+                )
+                .await
+            {
+                Ok(_) => completed.push(item.version_id),
+                Err(e) => {
+                    tracing::warn!(error = ?e, "Failed to complete upload in bulk");
+                    failed.push(item.version_id);
+                }
+            }
+        }
+
+        Ok(crate::features::files::dto::BulkCompleteUploadResponse { completed, failed })
     }
 }

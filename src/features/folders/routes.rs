@@ -12,6 +12,7 @@ pub fn router() -> Router<AppState> {
             "/folders",
             post(handlers::create_folder).get(handlers::list_folders),
         )
+        .route("/folders/bulk", post(handlers::create_folders_bulk))
         .route(
             "/folders/{folder_id}",
             get(handlers::get_folder)

@@ -31,7 +31,6 @@ pub async fn run(state: AppState, addr: SocketAddr) -> anyhow::Result<()> {
 pub fn build_router(state: AppState) -> Router {
     let cors = state.config.cors.as_cors_layer();
 
-    // Public routes (NO auth middleware, but HAS auth rate limiting)
     let public_routes = Router::new()
         .nest("/api/v1", features::auth::routes::public_router())
         .route("/health", axum::routing::get(health_check))
@@ -40,7 +39,6 @@ pub fn build_router(state: AppState) -> Router {
             core::middleware::rate_limit_auth,
         ));
 
-    // Protected routes (Auth middleware + API rate limiting)
     let protected_routes = Router::new()
         .nest(
             "/api/v1",
@@ -53,17 +51,15 @@ pub fn build_router(state: AppState) -> Router {
         )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
-            core::middleware::rate_limit_api,
-        ))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
             core::middleware::require_auth,
         ));
 
-    // Merge them and apply global middlewares
     Router::new()
         .merge(public_routes)
         .merge(protected_routes)
+        .layer(axum::middleware::from_fn(
+            core::middleware::add_security_headers,
+        ))
         .layer(SetSensitiveHeadersLayer::new([
             http::header::AUTHORIZATION,
             http::header::COOKIE,

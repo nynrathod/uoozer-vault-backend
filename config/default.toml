@@ -29,7 +29,7 @@ allowed_origins = []
 
 [rate_limit]
 auth_per_minute = 10
-api_per_minute = 120
+api_per_minute = 600
 
 [r2]
 presign_ttl_seconds = 300

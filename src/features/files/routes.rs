@@ -10,6 +10,11 @@ use crate::app_state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/files/precheck", get(handlers::precheck_upload))
+        .route("/files/bulk-init", post(handlers::bulk_init_uploads))
+        .route(
+            "/files/bulk-complete",
+            post(handlers::bulk_complete_uploads),
+        )
         .route(
             "/files/cleanup-orphans",
             post(handlers::cleanup_orphaned_uploads),

@@ -77,6 +77,7 @@ impl FolderService {
         state.broadcast_sync(
             user_id,
             SyncEvent {
+                seq: 0,
                 event_type: "created".to_string(),
                 resource_type: "folder".to_string(),
                 resource_id: folder.folder_id,
@@ -173,6 +174,7 @@ impl FolderService {
         state.broadcast_sync(
             user_id,
             SyncEvent {
+                seq: 0,
                 event_type: "updated".to_string(),
                 resource_type: "folder".to_string(),
                 resource_id: folder.folder_id,
@@ -199,6 +201,7 @@ impl FolderService {
         state.broadcast_sync(
             user_id,
             SyncEvent {
+                seq: 0,
                 event_type: "deleted".to_string(),
                 resource_type: "folder".to_string(),
                 resource_id: folder_id,
@@ -283,5 +286,57 @@ impl FolderService {
         .await?;
 
         Ok(())
+    }
+
+    pub async fn create_folders_bulk(
+        &self,
+        user_id: Uuid,
+        reqs: Vec<CreateFolderRequest>,
+        state: &AppState,
+    ) -> Result<Vec<FolderResponse>, AppError> {
+        let mut tx = self.db.begin().await?;
+        let mut results = Vec::with_capacity(reqs.len());
+
+        for req in reqs {
+            let metadata_nonce = crypto::decode_b64(&req.metadata_nonce)?;
+            if metadata_nonce.len() != 24 {
+                return Err(AppError::BadRequest(
+                    "metadata nonce must be 24 bytes".to_string(),
+                ));
+            }
+            let encrypted_metadata = crypto::decode_b64(&req.encrypted_metadata)?;
+
+            if let Some(parent_id) = req.parent_folder_id {
+                self.verify_folder_ownership(parent_id, user_id).await?;
+            }
+
+            let folder_id = Uuid::new_v4();
+            let folder = sqlx::query_as::<_, FolderResponse>(
+            "INSERT INTO folders (folder_id, user_id, parent_folder_id, encrypted_metadata, metadata_nonce) VALUES ($1, $2, $3, $4, $5) 
+             RETURNING folder_id, parent_folder_id, encrypted_metadata, metadata_nonce, deleted_at, created_at, updated_at",
+        )
+        .bind(folder_id)
+        .bind(user_id)
+        .bind(req.parent_folder_id)
+        .bind(&encrypted_metadata)
+        .bind(&metadata_nonce)
+        .fetch_one(&mut *tx)
+        .await?;
+
+            state.broadcast_sync(
+                user_id,
+                SyncEvent {
+                    seq: 0,
+                    event_type: "created".to_string(),
+                    resource_type: "folder".to_string(),
+                    resource_id: folder.folder_id,
+                    payload: serde_json::to_value(&folder).unwrap_or_default(),
+                },
+            );
+            results.push(folder);
+        }
+
+        tx.commit().await?;
+        Ok(results)
     }
 }

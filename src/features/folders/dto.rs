@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Serialize, Validate)]
 pub struct CreateFolderRequest {
     /// Encrypted folder metadata blob (XChaCha20-Poly1305 ciphertext).
     pub encrypted_metadata: String, // base64
@@ -22,6 +22,12 @@ pub struct FolderResponse {
     pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct BulkCreateFoldersRequest {
+    #[validate(length(min = 1, max = 500))]
+    pub folders: Vec<CreateFolderRequest>,
 }
 
 impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for FolderResponse {

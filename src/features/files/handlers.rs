@@ -8,6 +8,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 use validator::Validate;
 
+use super::dto::{BulkCompleteUploadRequest, BulkCreateFilesRequest, BulkCreateFilesResponse};
 use crate::app_state::AppState;
 use crate::core::error::AppError;
 use crate::core::middleware::AuthenticatedUser;
@@ -232,4 +233,32 @@ pub async fn bulk_cancel_uploads(
     let svc = FileService::new(&state);
     let cancelled = svc.bulk_cancel_uploads(user.user_id, req.uploads).await?;
     Ok(Json(serde_json::json!({ "cancelled": cancelled })))
+}
+
+pub async fn bulk_init_uploads(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Json(req): Json<BulkCreateFilesRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    req.validate()?;
+    let svc = FileService::new(&state);
+    let results = svc
+        .bulk_init_uploads(user.user_id, user.device_id, req.files)
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(BulkCreateFilesResponse { results }),
+    ))
+}
+
+pub async fn bulk_complete_uploads(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Json(req): Json<BulkCompleteUploadRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FileService::new(&state);
+    let resp = svc
+        .bulk_complete_uploads(user.user_id, user.device_id, req.uploads)
+        .await?;
+    Ok(Json(resp))
 }

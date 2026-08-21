@@ -21,6 +21,7 @@ pub async fn sync_stream(
                     let sse_event = Event::default()
                         .event(format!("{}.{}", event.resource_type, event.event_type))
                         .json_data(serde_json::json!({
+                            "seq": event.seq,
                             "resource_id": event.resource_id,
                             "payload": event.payload
                         }));
