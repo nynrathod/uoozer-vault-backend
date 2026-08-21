@@ -9,6 +9,7 @@ use crate::app_state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/files/precheck", get(handlers::precheck_upload))
         .route(
             "/files",
             post(handlers::create_file)
@@ -22,6 +23,11 @@ pub fn router() -> Router<AppState> {
                 .delete(handlers::delete_file),
         )
         .route("/files/bulk-delete", post(handlers::bulk_delete))
+        .route("/files/{file_id}/restore", post(handlers::restore_file))
+        .route(
+            "/files/{file_id}/permanent",
+            axum::routing::delete(handlers::permanent_delete_file),
+        )
         .route(
             "/files/{file_id}/versions",
             post(handlers::create_version)

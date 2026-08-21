@@ -18,6 +18,7 @@ use super::service::FolderService;
 #[derive(Deserialize)]
 pub struct ListFoldersQuery {
     pub parent_folder_id: Option<Uuid>,
+    pub trashed: Option<bool>,
 }
 
 pub async fn create_folder(
@@ -47,7 +48,9 @@ pub async fn list_folders(
     Query(q): Query<ListFoldersQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     let svc = FolderService::new(state.db);
-    let folders = svc.list_folders(user.user_id, q.parent_folder_id).await?;
+    let folders = svc
+        .list_folders(user.user_id, q.parent_folder_id, q.trashed.unwrap_or(false))
+        .await?;
     Ok(Json(folders))
 }
 

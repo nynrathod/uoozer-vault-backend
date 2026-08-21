@@ -60,6 +60,7 @@ pub struct FileResponse {
     pub total_size: i64,
     pub current_version_id: Option<Uuid>,
     pub is_uploading: bool,
+    pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -79,6 +80,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for FileResponse {
             total_size: row.try_get("total_size")?,
             current_version_id: row.try_get("current_version_id")?,
             is_uploading: row.try_get("is_uploading")?,
+            deleted_at: row.try_get("deleted_at")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
         })

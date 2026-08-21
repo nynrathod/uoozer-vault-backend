@@ -302,7 +302,7 @@ impl FileService {
     pub async fn get_file(&self, user_id: Uuid, file_id: Uuid) -> Result<FileResponse, AppError> {
         let file = sqlx::query_as::<_, FileResponse>(
             "SELECT f.file_id, f.folder_id, f.encrypted_metadata, f.metadata_nonce,
-                    f.total_size, f.current_version_id,
+                    f.total_size, f.current_version_id, f.deleted_at, -- FIX: Added f.deleted_at
                     (f.current_version_id IS NOT NULL AND NOT COALESCE(
                         (SELECT v.is_active FROM file_versions v WHERE v.version_id = f.current_version_id), false
                     )) AS is_uploading,
@@ -321,30 +321,54 @@ impl FileService {
         folder_id: Option<Uuid>,
         limit: i64,
         offset: i64,
+        trashed: bool,
     ) -> Result<ListFilesResponse, AppError> {
         let limit = limit.clamp(1, 1000);
         let offset = offset.max(0);
 
-        let total: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM files WHERE user_id = $1 AND folder_id IS NOT DISTINCT FROM $2 AND deleted_at IS NULL",
-        )
-        .bind(user_id).bind(folder_id).fetch_one(&self.db).await?;
+        if trashed {
+            let total: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM files WHERE user_id = $1 AND folder_id IS NOT DISTINCT FROM $2 AND deleted_at IS NOT NULL",
+            )
+            .bind(user_id).bind(folder_id).fetch_one(&self.db).await?;
 
-        let files = sqlx::query_as::<_, FileResponse>(
-            "SELECT f.file_id, f.folder_id, f.encrypted_metadata, f.metadata_nonce,
-                    f.total_size, f.current_version_id,
-                    (f.current_version_id IS NOT NULL AND NOT COALESCE(
-                        (SELECT v.is_active FROM file_versions v WHERE v.version_id = f.current_version_id), false
-                    )) AS is_uploading,
-                    f.created_at, f.updated_at
-             FROM files f
-             WHERE f.user_id = $1 AND f.folder_id IS NOT DISTINCT FROM $2 AND f.deleted_at IS NULL
-             ORDER BY f.updated_at DESC LIMIT $3 OFFSET $4",
-        )
-        .bind(user_id).bind(folder_id).bind(limit).bind(offset)
-        .fetch_all(&self.db).await?;
+            let files = sqlx::query_as::<_, FileResponse>(
+                "SELECT f.file_id, f.folder_id, f.encrypted_metadata, f.metadata_nonce,
+                        f.total_size, f.current_version_id, f.deleted_at,
+                        (f.current_version_id IS NOT NULL AND NOT COALESCE(
+                            (SELECT v.is_active FROM file_versions v WHERE v.version_id = f.current_version_id), false
+                        )) AS is_uploading,
+                        f.created_at, f.updated_at
+                 FROM files f
+                 WHERE f.user_id = $1 AND f.folder_id IS NOT DISTINCT FROM $2 AND f.deleted_at IS NOT NULL
+                 ORDER BY f.updated_at DESC LIMIT $3 OFFSET $4",
+            )
+            .bind(user_id).bind(folder_id).bind(limit).bind(offset)
+            .fetch_all(&self.db).await?;
 
-        Ok(ListFilesResponse { files, total })
+            Ok(ListFilesResponse { files, total })
+        } else {
+            let total: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM files WHERE user_id = $1 AND folder_id IS NOT DISTINCT FROM $2 AND deleted_at IS NULL",
+            )
+            .bind(user_id).bind(folder_id).fetch_one(&self.db).await?;
+
+            let files = sqlx::query_as::<_, FileResponse>(
+                "SELECT f.file_id, f.folder_id, f.encrypted_metadata, f.metadata_nonce,
+                        f.total_size, f.current_version_id, f.deleted_at,
+                        (f.current_version_id IS NOT NULL AND NOT COALESCE(
+                            (SELECT v.is_active FROM file_versions v WHERE v.version_id = f.current_version_id), false
+                        )) AS is_uploading,
+                        f.created_at, f.updated_at
+                 FROM files f
+                 WHERE f.user_id = $1 AND f.folder_id IS NOT DISTINCT FROM $2 AND f.deleted_at IS NULL
+                 ORDER BY f.updated_at DESC LIMIT $3 OFFSET $4",
+            )
+            .bind(user_id).bind(folder_id).bind(limit).bind(offset)
+            .fetch_all(&self.db).await?;
+
+            Ok(ListFilesResponse { files, total })
+        }
     }
 
     pub async fn update_file(
@@ -580,6 +604,12 @@ impl FileService {
     }
 
     async fn validate_create_request(&self, req: &CreateFileRequest) -> Result<(), AppError> {
+        if crate::core::crypto::decode_b64(&req.encrypted_metadata).is_err() {
+            return Err(AppError::BadRequest(
+                "invalid base64 encoding for encrypted_metadata".into(),
+            ));
+        }
+
         let metadata_nonce = crypto::decode_b64(&req.metadata_nonce)?;
         if metadata_nonce.len() != 24 {
             return Err(AppError::BadRequest(
@@ -609,7 +639,7 @@ impl FileService {
                 "chunks array length does not match total_chunks".into(),
             ));
         }
-        if req.total_size < 0 || req.total_size > MAX_FILE_SIZE {
+        if req.total_size <= 0 || req.total_size > MAX_FILE_SIZE {
             return Err(AppError::BadRequest("invalid total_size".into()));
         }
 
@@ -761,11 +791,6 @@ impl FileService {
         device_id: Uuid,
         file_id: Uuid,
     ) -> Result<(), AppError> {
-        let r2_keys: Vec<String> = sqlx::query_scalar(
-            "SELECT c.r2_key FROM file_chunks c JOIN file_versions v ON c.version_id = v.version_id WHERE v.file_id = $1",
-        )
-        .bind(file_id).fetch_all(&self.db).await?;
-
         let mut tx = self.db.begin().await?;
 
         let affected = sqlx::query(
@@ -781,25 +806,37 @@ impl FileService {
             &mut *tx,
             Some(user_id),
             Some(device_id),
-            "file_deleted",
+            "file_deleted_to_trash",
             &serde_json::json!({ "file_id": file_id }),
         )
         .await?;
-
         tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn restore_file(&self, user_id: Uuid, file_id: Uuid) -> Result<(), AppError> {
+        sqlx::query("UPDATE files SET deleted_at = NULL, updated_at = now() WHERE file_id = $1 AND user_id = $2 AND deleted_at IS NOT NULL")
+            .bind(file_id).bind(user_id).execute(&self.db).await?;
+        Ok(())
+    }
+
+    pub async fn permanently_delete_file(
+        &self,
+        user_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<(), AppError> {
+        let r2_keys: Vec<String> = sqlx::query_scalar(
+            "SELECT c.r2_key FROM file_chunks c JOIN file_versions v ON c.version_id = v.version_id WHERE v.file_id = $1",
+        )
+        .bind(file_id).fetch_all(&self.db).await?;
+
+        sqlx::query("DELETE FROM files WHERE file_id = $1 AND user_id = $2")
+            .bind(file_id)
+            .bind(user_id)
+            .execute(&self.db)
+            .await?;
 
         self.storage.delete_objects_best_effort(&r2_keys).await;
-
-        self.broadcast(
-            user_id,
-            SyncEvent {
-                event_type: "deleted".into(),
-                resource_type: "file".into(),
-                resource_id: file_id,
-                payload: serde_json::json!({}),
-            },
-        );
-
         Ok(())
     }
 
@@ -865,6 +902,87 @@ impl FileService {
         self.storage
             .delete_objects_best_effort(&r2_keys_to_delete)
             .await;
+
+        Ok(())
+    }
+
+    /// Pre-checks dedup and quota before client wastes time encrypting.
+    pub async fn precheck_upload(
+        &self,
+        user_id: Uuid,
+        plaintext_blake3: String,
+        total_size: i64,
+    ) -> Result<serde_json::Value, AppError> {
+        // 1. Check Quota
+        let current_usage: i64 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(SUM(total_size), 0) AS BIGINT) FROM files WHERE user_id = $1 AND deleted_at IS NULL"
+    )
+    .bind(user_id)
+    .fetch_one(&self.db)
+    .await?;
+
+        const USER_STORAGE_QUOTA_BYTES: i64 = 100 * 1024 * 1024;
+        if current_usage + total_size > USER_STORAGE_QUOTA_BYTES {
+            return Err(AppError::BadRequest("storage quota exceeded".into()));
+        }
+
+        // 2. Check Dedup
+        let hash_bytes = crate::core::crypto::decode_b64(&plaintext_blake3)?;
+        let existing: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT f.file_id, f.current_version_id FROM files f 
+         JOIN file_versions v ON f.current_version_id = v.version_id 
+         WHERE f.user_id = $1 AND v.plaintext_blake3 = $2 AND f.deleted_at IS NULL AND v.is_active = true"
+    )
+    .bind(user_id)
+    .bind(&hash_bytes)
+    .fetch_optional(&self.db)
+    .await?;
+
+        Ok(serde_json::json!({
+            "allowed": true,
+            "deduplicated": existing.is_some(),
+            "existing_file_id": existing.map(|(f, _)| f),
+            "existing_version_id": existing.map(|(_, v)| v),
+        }))
+    }
+
+    /// Cleans up orphaned chunks and DB records when an upload is cancelled.
+    pub async fn cancel_upload(
+        &self,
+        user_id: Uuid,
+        file_id: Uuid,
+        version_id: Uuid,
+    ) -> Result<(), AppError> {
+        let mut tx = self.db.begin().await?;
+
+        let r2_keys: Vec<String> =
+            sqlx::query_scalar("SELECT c.r2_key FROM file_chunks c WHERE c.version_id = $1")
+                .bind(version_id)
+                .fetch_all(&mut *tx)
+                .await?;
+
+        sqlx::query("DELETE FROM file_chunks WHERE version_id = $1")
+            .bind(version_id)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query("DELETE FROM file_versions WHERE version_id = $1 AND is_active = false")
+            .bind(version_id)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query(
+            "DELETE FROM files WHERE file_id = $1 AND user_id = $2 AND current_version_id = $3",
+        )
+        .bind(file_id)
+        .bind(user_id)
+        .bind(version_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        self.storage.delete_objects_best_effort(&r2_keys).await;
 
         Ok(())
     }

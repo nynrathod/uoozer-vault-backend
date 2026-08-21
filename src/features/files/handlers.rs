@@ -22,6 +22,13 @@ pub struct ListFilesQuery {
     pub limit: i64,
     #[serde(default)]
     pub offset: i64,
+    pub trashed: Option<bool>,
+}
+
+#[derive(Deserialize)]
+pub struct PrecheckQuery {
+    pub plaintext_blake3: String,
+    pub total_size: i64,
 }
 
 fn default_limit() -> i64 {
@@ -75,7 +82,13 @@ pub async fn list_files(
 ) -> Result<impl IntoResponse, AppError> {
     let svc = FileService::new(&state);
     let files = svc
-        .list_files(user.user_id, q.folder_id, q.limit, q.offset)
+        .list_files(
+            user.user_id,
+            q.folder_id,
+            q.limit,
+            q.offset,
+            q.trashed.unwrap_or(false),
+        )
         .await?;
     Ok(Json(files))
 }
@@ -155,5 +168,49 @@ pub async fn bulk_delete(
 ) -> Result<impl IntoResponse, AppError> {
     let svc = FileService::new(&state);
     svc.bulk_delete(user.user_id, user.device_id, req).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn restore_file(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(file_id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FileService::new(&state);
+    svc.restore_file(user.user_id, file_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn permanent_delete_file(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(file_id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FileService::new(&state);
+    svc.permanently_delete_file(user.user_id, file_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Pre-checks dedup and quota before client wastes time encrypting.
+pub async fn precheck_upload(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Query(q): Query<PrecheckQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FileService::new(&state);
+    let resp = svc
+        .precheck_upload(user.user_id, q.plaintext_blake3, q.total_size)
+        .await?;
+    Ok(Json(resp))
+}
+
+/// Cleans up orphaned chunks and DB records when an upload is cancelled.
+pub async fn cancel_upload(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path((file_id, version_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FileService::new(&state);
+    svc.cancel_upload(user.user_id, file_id, version_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -63,7 +63,8 @@ impl FolderService {
 
         let folder_id = Uuid::new_v4();
         let folder = sqlx::query_as::<_, FolderResponse>(
-            "INSERT INTO folders (folder_id, user_id, parent_folder_id, encrypted_metadata, metadata_nonce) VALUES ($1, $2, $3, $4, $5) RETURNING folder_id, parent_folder_id, encrypted_metadata, metadata_nonce, created_at, updated_at",
+            "INSERT INTO folders (folder_id, user_id, parent_folder_id, encrypted_metadata, metadata_nonce) VALUES ($1, $2, $3, $4, $5) 
+             RETURNING folder_id, parent_folder_id, encrypted_metadata, metadata_nonce, deleted_at, created_at, updated_at",
         )
         .bind(folder_id)
         .bind(user_id)
@@ -107,16 +108,27 @@ impl FolderService {
         &self,
         user_id: Uuid,
         parent_folder_id: Option<Uuid>,
+        trashed: bool,
     ) -> Result<Vec<FolderResponse>, AppError> {
-        let folders = sqlx::query_as::<_, FolderResponse>(
-            "SELECT folder_id, parent_folder_id, encrypted_metadata, metadata_nonce, created_at, updated_at FROM folders WHERE user_id = $1 AND parent_folder_id IS NOT DISTINCT FROM $2 AND deleted_at IS NULL",
-        )
-        .bind(user_id)
-        .bind(parent_folder_id)
-        .fetch_all(&self.db)
-        .await?;
+        if trashed {
+            let folders = sqlx::query_as::<_, FolderResponse>(
+                "SELECT folder_id, parent_folder_id, encrypted_metadata, metadata_nonce, deleted_at, created_at, updated_at 
+                 FROM folders 
+                 WHERE user_id = $1 AND parent_folder_id IS NOT DISTINCT FROM $2 AND deleted_at IS NOT NULL",
+            )
+            .bind(user_id).bind(parent_folder_id).fetch_all(&self.db).await?;
 
-        Ok(folders)
+            Ok(folders)
+        } else {
+            let folders = sqlx::query_as::<_, FolderResponse>(
+                "SELECT folder_id, parent_folder_id, encrypted_metadata, metadata_nonce, deleted_at, created_at, updated_at 
+                 FROM folders 
+                 WHERE user_id = $1 AND parent_folder_id IS NOT DISTINCT FROM $2 AND deleted_at IS NULL",
+            )
+            .bind(user_id).bind(parent_folder_id).fetch_all(&self.db).await?;
+
+            Ok(folders)
+        }
     }
 
     pub async fn update_folder(
@@ -147,7 +159,9 @@ impl FolderService {
         }
 
         let folder = sqlx::query_as::<_, FolderResponse>(
-            "UPDATE folders SET encrypted_metadata = $1, metadata_nonce = $2, parent_folder_id = $3, updated_at = now() WHERE folder_id = $4 AND deleted_at IS NULL RETURNING folder_id, parent_folder_id, encrypted_metadata, metadata_nonce, created_at, updated_at",
+            "UPDATE folders SET encrypted_metadata = $1, metadata_nonce = $2, parent_folder_id = $3, updated_at = now() 
+             WHERE folder_id = $4 AND deleted_at IS NULL 
+             RETURNING folder_id, parent_folder_id, encrypted_metadata, metadata_nonce, deleted_at, created_at, updated_at",
         )
         .bind(&encrypted_metadata)
         .bind(&metadata_nonce)

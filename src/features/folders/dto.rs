@@ -19,6 +19,7 @@ pub struct FolderResponse {
     pub parent_folder_id: Option<Uuid>,
     pub encrypted_metadata: String, // base64
     pub metadata_nonce: String,     // base64
+    pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -35,6 +36,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for FolderResponse {
             parent_folder_id: row.try_get("parent_folder_id")?,
             encrypted_metadata: crate::core::crypto::encode_b64(&encrypted_metadata),
             metadata_nonce: crate::core::crypto::encode_b64(&metadata_nonce),
+            deleted_at: row.try_get("deleted_at")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
         })
