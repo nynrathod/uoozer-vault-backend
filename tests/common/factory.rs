@@ -116,3 +116,21 @@ pub fn update_file_req() -> Value {
         "metadata_nonce": random_b64(24),
     })
 }
+
+pub fn create_file_req_with_hash(folder_id: Option<uuid::Uuid>, plaintext_blake3: String) -> Value {
+    json!({
+        "folder_id": folder_id,
+        "encrypted_metadata": random_b64(48),
+        "metadata_nonce": random_b64(24),
+        "plaintext_blake3": plaintext_blake3,
+        "total_size": 1024,
+        "total_chunks": 1,
+        "encryption_header": random_b64(24),
+        "chunks": [{
+            "chunk_index": 0,
+            "segment_index": 0,
+            "chunk_size": 1024 + 17,
+            "chunk_blake3": random_b64(32),
+        }]
+    })
+}

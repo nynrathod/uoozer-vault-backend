@@ -508,3 +508,51 @@ async fn create_file_rejects_exceeding_quota() {
             .contains("storage quota exceeded")
     );
 }
+
+#[tokio::test]
+async fn create_file_chunk_count_boundary() {
+    let (server, _pool, _guard) = setup_app().await;
+    let (access, _, _, _) = common::signup_full(&server, "boundary@example.com").await;
+
+    let mut req = factory::create_file_req(None);
+    req["total_chunks"] = json!(50_001);
+
+    let resp = server
+        .client
+        .post(server.url(&format!("{API}/files")))
+        .header("authorization", format!("Bearer {access}"))
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::BAD_REQUEST);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid total_chunks")
+    );
+}
+
+#[tokio::test]
+async fn create_file_invalid_base64_metadata() {
+    let (server, _pool, _guard) = setup_app().await;
+    let (access, _, _, _) = common::signup_full(&server, "b64@example.com").await;
+
+    let mut req = factory::create_file_req(None);
+    req["encrypted_metadata"] = json!("!!!not_valid_base64!!!");
+
+    let resp = server
+        .client
+        .post(server.url(&format!("{API}/files")))
+        .header("authorization", format!("Bearer {access}"))
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::BAD_REQUEST);
+}
