@@ -204,4 +204,29 @@ impl R2Client {
                 AppError::ServiceUnavailable("storage upload failed".to_string())
             })
     }
+
+    pub async fn presign_get_with_filename(
+        &self,
+        key: &str,
+        filename: &str,
+    ) -> Result<String, AppError> {
+        let presign_config = PresigningConfig::expires_in(self.presign_ttl)
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("storage configuration error")))?;
+
+        let safe_filename = filename.replace('"', "").replace('\n', "");
+        let content_disposition = format!("attachment; filename=\"{}\"", safe_filename);
+
+        self.client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .response_content_disposition(content_disposition)
+            .presigned(presign_config)
+            .await
+            .map(|p| p.uri().to_string())
+            .map_err(|e| {
+                tracing::error!(error = ?e, key, "failed to presign GET");
+                AppError::ServiceUnavailable("failed to generate download URL".to_string())
+            })
+    }
 }

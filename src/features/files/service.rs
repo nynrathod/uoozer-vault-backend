@@ -641,7 +641,7 @@ impl FileService {
                 "chunks array length does not match total_chunks".into(),
             ));
         }
-        if req.total_size <= 0 || req.total_size > MAX_FILE_SIZE {
+        if req.total_size < 0 || req.total_size > MAX_FILE_SIZE {
             return Err(AppError::BadRequest("invalid total_size".into()));
         }
 
@@ -802,6 +802,14 @@ impl FileService {
         .bind(file_id).bind(user_id).execute(&mut *tx).await?.rows_affected();
 
         if affected == 0 {
+            let already_deleted: Option<(Uuid,)> = sqlx::query_as(
+                "SELECT file_id FROM files WHERE file_id = $1 AND user_id = $2 AND deleted_at IS NOT NULL"
+            )
+            .bind(file_id).bind(user_id).fetch_optional(&mut *tx).await?;
+
+            if already_deleted.is_some() {
+                return Ok(());
+            }
             return Err(AppError::NotFound);
         }
 
