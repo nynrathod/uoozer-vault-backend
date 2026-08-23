@@ -16,3 +16,12 @@ CREATE TABLE IF NOT EXISTS item_shares (
 );
 
 ALTER TABLE item_shares ADD COLUMN IF NOT EXISTS item_id UUID NOT NULL;
+
+
+-- Add revocation support and indexing for share management
+ALTER TABLE item_shares ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ;
+
+-- Indexes for efficient owner-based listing and item lookups
+CREATE INDEX IF NOT EXISTS idx_item_shares_owner ON item_shares (owner_user_id) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_item_shares_item ON item_shares (item_id, item_type);
+CREATE INDEX IF NOT EXISTS idx_item_shares_expires ON item_shares (expires_at);

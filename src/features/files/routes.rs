@@ -8,7 +8,12 @@ use super::handlers;
 use crate::app_state::AppState;
 
 pub fn public_router() -> Router<AppState> {
-    Router::new().route("/shares/{share_id}", get(handlers::get_share))
+    Router::new()
+        .route("/shares/{share_id}", get(handlers::get_share))
+        .route(
+            "/shares/{share_id}/files/{file_id}",
+            get(handlers::get_shared_file_manifest),
+        )
 }
 
 pub fn router() -> Router<AppState> {
@@ -62,8 +67,9 @@ pub fn router() -> Router<AppState> {
             post(handlers::cancel_upload),
         )
         .route("/files/{file_id}/shares", post(handlers::create_share))
+        .route("/shares", get(handlers::list_shares))
         .route(
-            "/shares/{share_id}/files/{file_id}",
-            get(handlers::get_shared_file_manifest),
+            "/shares/{share_id}",
+            axum::routing::delete(handlers::revoke_share),
         )
 }

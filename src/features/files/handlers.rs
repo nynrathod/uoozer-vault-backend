@@ -291,3 +291,22 @@ pub async fn get_shared_file_manifest(
     let manifest = svc.get_shared_file_manifest(share_id, file_id).await?;
     Ok(Json(manifest))
 }
+
+pub async fn revoke_share(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(share_id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FileService::new(&state);
+    svc.revoke_share(user.user_id, share_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_shares(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FileService::new(&state);
+    let shares = svc.list_shares(user.user_id).await?;
+    Ok(Json(ListSharesResponse { shares }))
+}

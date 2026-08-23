@@ -36,6 +36,8 @@ pub struct CreateFileRequest {
     pub wrapped_file_key_nonce: String,
 }
 
+// ── Share management ──────────────────────────────────────────
+
 #[derive(Debug, Deserialize)]
 pub struct CreateShareRequest {
     pub item_type: String,
@@ -43,6 +45,7 @@ pub struct CreateShareRequest {
     pub encrypted_nonce: String,
     pub encryption_header: Option<String>,
     pub item_id: Uuid,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +62,21 @@ pub struct GetShareResponse {
     pub encryption_header: Option<String>,
     pub chunks: Option<Vec<DownloadChunkInfo>>,
     pub total_size: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ShareListItem {
+    pub share_id: Uuid,
+    pub item_id: Uuid,
+    pub item_type: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListSharesResponse {
+    pub shares: Vec<ShareListItem>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

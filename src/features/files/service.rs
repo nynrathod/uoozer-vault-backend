@@ -1356,12 +1356,23 @@ impl FileService {
 
         let share_id = Uuid::new_v4();
         sqlx::query(
-        "INSERT INTO item_shares (share_id, owner_user_id, item_id, item_type, encrypted_payload, encrypted_nonce, encryption_header) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7)"
+        "INSERT INTO item_shares (share_id, owner_user_id, item_id, item_type, encrypted_payload, encrypted_nonce, encryption_header, expires_at) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
     )
     .bind(share_id).bind(user_id).bind(item_id).bind(&req.item_type)
     .bind(&encrypted_payload).bind(&encrypted_nonce).bind(&encryption_header)
+    .bind(req.expires_at)
     .execute(&self.db).await?;
+
+        audit::log(
+            &self.db,
+            Some(user_id),
+            None,
+            "share_created",
+            &serde_json::json!({ "share_id": share_id, "item_id": item_id, "item_type": req.item_type }),
+        )
+        .await
+        .ok();
 
         Ok(share_id)
     }
@@ -1369,7 +1380,10 @@ impl FileService {
     pub async fn get_share(&self, share_id: Uuid) -> Result<GetShareResponse, AppError> {
         let row = sqlx::query(
             "SELECT share_id, item_id, item_type, encrypted_payload, encrypted_nonce, encryption_header 
-             FROM item_shares WHERE share_id = $1 AND (expires_at IS NULL OR expires_at > now())",
+             FROM item_shares 
+             WHERE share_id = $1 
+               AND revoked_at IS NULL
+               AND (expires_at IS NULL OR expires_at > now())",
         )
         .bind(share_id)
         .fetch_optional(&self.db)
@@ -1420,11 +1434,73 @@ impl FileService {
         })
     }
 
+    async fn verify_file_in_shared_folder(
+        &self,
+        share_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<Uuid, AppError> {
+        let share: Option<(Uuid, String)> = sqlx::query_as(
+            "SELECT item_id, item_type FROM item_shares 
+             WHERE share_id = $1 AND revoked_at IS NULL 
+               AND (expires_at IS NULL OR expires_at > now())",
+        )
+        .bind(share_id)
+        .fetch_optional(&self.db)
+        .await?;
+
+        let (shared_item_id, item_type) = share.ok_or(AppError::NotFound)?;
+
+        if item_type == "file" {
+            if shared_item_id != file_id {
+                return Err(AppError::NotFound);
+            }
+            return Ok(shared_item_id);
+        }
+
+        let file_folder_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT folder_id FROM files WHERE file_id = $1 AND deleted_at IS NULL",
+        )
+        .bind(file_id)
+        .fetch_optional(&self.db)
+        .await?;
+
+        let file_folder_id = file_folder_id.ok_or(AppError::NotFound)?;
+
+        if file_folder_id == shared_item_id {
+            return Ok(shared_item_id);
+        }
+
+        let is_descendant: bool = sqlx::query_scalar(
+            r#"
+            WITH RECURSIVE folder_chain AS (
+                SELECT folder_id, parent_folder_id FROM folders WHERE folder_id = $1 AND deleted_at IS NULL
+                UNION ALL
+                SELECT f.folder_id, f.parent_folder_id FROM folders f
+                INNER JOIN folder_chain fc ON f.folder_id = fc.parent_folder_id
+                WHERE f.deleted_at IS NULL
+            )
+            SELECT EXISTS(SELECT 1 FROM folder_chain WHERE folder_id = $2)
+            "#,
+        )
+        .bind(file_folder_id)
+        .bind(shared_item_id)
+        .fetch_one(&self.db)
+        .await?;
+
+        if !is_descendant {
+            return Err(AppError::NotFound);
+        }
+
+        Ok(shared_item_id)
+    }
+
     pub async fn get_shared_file_manifest(
         &self,
         share_id: Uuid,
         file_id: Uuid,
     ) -> Result<DownloadManifestResponse, AppError> {
+        self.verify_file_in_shared_folder(share_id, file_id).await?;
+
         let version_id: Uuid =
             sqlx::query_scalar("SELECT current_version_id FROM files WHERE file_id = $1")
                 .bind(file_id)
@@ -1453,5 +1529,65 @@ impl FileService {
             wrapped_file_key_nonce: "".to_string(),
             chunks: chunk_infos,
         })
+    }
+
+    pub async fn revoke_share(&self, user_id: Uuid, share_id: Uuid) -> Result<(), AppError> {
+        let result = sqlx::query(
+            "UPDATE item_shares SET revoked_at = now() 
+             WHERE share_id = $1 AND owner_user_id = $2 AND revoked_at IS NULL",
+        )
+        .bind(share_id)
+        .bind(user_id)
+        .execute(&self.db)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound);
+        }
+
+        audit::log(
+            &self.db,
+            Some(user_id),
+            None,
+            "share_revoked",
+            &serde_json::json!({ "share_id": share_id }),
+        )
+        .await
+        .ok();
+
+        Ok(())
+    }
+
+    pub async fn list_shares(&self, user_id: Uuid) -> Result<Vec<ShareListItem>, AppError> {
+        let rows: Vec<(
+            Uuid,
+            Uuid,
+            String,
+            chrono::DateTime<chrono::Utc>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            Option<chrono::DateTime<chrono::Utc>>,
+        )> = sqlx::query_as(
+            "SELECT share_id, item_id, item_type, created_at, expires_at, revoked_at 
+             FROM item_shares 
+             WHERE owner_user_id = $1 
+             ORDER BY created_at DESC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(sid, iid, itype, created, expires, revoked)| ShareListItem {
+                    share_id: sid,
+                    item_id: iid,
+                    item_type: itype,
+                    created_at: created,
+                    expires_at: expires,
+                    revoked_at: revoked,
+                },
+            )
+            .collect())
     }
 }
