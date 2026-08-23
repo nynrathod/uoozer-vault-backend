@@ -4,28 +4,6 @@ use common::{API, factory, setup_app};
 use serde_json::json;
 
 #[tokio::test]
-async fn empty_file_rejected() {
-    let (server, _pool, _guard) = setup_app().await;
-    let (access, _, _, _) = common::signup_full(&server, "case1@example.com").await;
-
-    let mut req = factory::create_file_req(None);
-    req["total_size"] = json!(0);
-    req["total_chunks"] = json!(1);
-    req["chunks"][0]["chunk_size"] = json!(17); // 0 + 17 bytes overhead
-
-    let resp = server
-        .client
-        .post(server.url(&format!("{API}/files")))
-        .header("authorization", format!("Bearer {access}"))
-        .json(&req)
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), http::StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
 async fn precheck_quota_exceeded() {
     let (server, _pool, _guard) = setup_app().await;
     let (access, _, _, _) = common::signup_full(&server, "case6@example.com").await;

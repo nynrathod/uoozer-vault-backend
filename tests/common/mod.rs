@@ -55,8 +55,6 @@ pub async fn setup_app() -> (TestServer, PgPool, TestGuard) {
         .await
         .expect("Failed to run migrations");
 
-    // Acquire a dedicated connection and hold a Postgres advisory lock on it.
-    // This serializes test setup across ALL processes (fixes nextest deadlocks).
     let mut lock_conn = pool.acquire().await.unwrap();
     sqlx::query("SELECT pg_advisory_lock(20240101)")
         .execute(&mut *lock_conn)
@@ -75,6 +73,9 @@ pub async fn setup_app() -> (TestServer, PgPool, TestGuard) {
     settings.argon2.m_cost = 4096;
     settings.argon2.t_cost = 1;
     settings.bcrypt.cost = 4;
+
+    settings.rate_limit.auth_per_minute = 5;
+    settings.rate_limit.api_per_minute = 10;
 
     // If this env var is set, use real MinIO for E2E tests
     if std::env::var("RUN_E2E_STORAGE_TESTS").is_ok() {

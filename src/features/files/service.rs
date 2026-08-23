@@ -460,12 +460,6 @@ impl FileService {
         file_id: Uuid,
         version_id: Option<Uuid>,
     ) -> Result<DownloadManifestResponse, AppError> {
-        if !self.storage.is_configured() {
-            return Err(AppError::ServiceUnavailable(
-                "storage is not configured".into(),
-            ));
-        }
-
         let file: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
             "SELECT file_id, current_version_id FROM files WHERE file_id = $1 AND user_id = $2 AND deleted_at IS NULL",
         )
@@ -490,6 +484,12 @@ impl FileService {
                     "file upload is not complete — no active version".into(),
                 ))?,
             };
+
+        if !self.storage.is_configured() {
+            return Err(AppError::ServiceUnavailable(
+                "storage is not configured".into(),
+            ));
+        }
 
         let version: (Vec<u8>, i64, i32) = sqlx::query_as(
             "SELECT encryption_header, total_size, total_chunks FROM file_versions WHERE version_id = $1",
@@ -1102,6 +1102,33 @@ impl FileService {
         device_id: Uuid,
         reqs: Vec<CreateFileRequest>,
     ) -> Result<Vec<CreateFileResponse>, AppError> {
+        let mut total_bulk_size: i64 = 0;
+        for req in &reqs {
+            self.validate_create_request(req).await?;
+            total_bulk_size += req.total_size;
+        }
+
+        let current_usage: i64 = sqlx::query_scalar(
+            "SELECT CAST(COALESCE(SUM(total_size), 0) AS BIGINT) FROM files WHERE user_id = $1 AND deleted_at IS NULL"
+        )
+        .bind(user_id)
+        .fetch_one(&self.db)
+        .await?;
+
+        const USER_STORAGE_QUOTA_BYTES: i64 = 100 * 1024 * 1024;
+        if current_usage + total_bulk_size > USER_STORAGE_QUOTA_BYTES {
+            return Err(AppError::BadRequest(format!(
+                "storage quota exceeded. limit: {} bytes, used: {} bytes",
+                USER_STORAGE_QUOTA_BYTES, current_usage
+            )));
+        }
+
+        if !self.storage.is_configured() {
+            return Err(AppError::ServiceUnavailable(
+                "storage is not configured".into(),
+            ));
+        }
+
         let mut results = Vec::with_capacity(reqs.len());
         let mut tx = self.db.begin().await?;
 
