@@ -42,6 +42,7 @@ pub struct CreateShareRequest {
     pub encrypted_payload: String,
     pub encrypted_nonce: String,
     pub encryption_header: Option<String>,
+    pub item_id: Uuid,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,6 +57,8 @@ pub struct GetShareResponse {
     pub encrypted_payload: String,
     pub encrypted_nonce: String,
     pub encryption_header: Option<String>,
+    pub chunks: Option<Vec<DownloadChunkInfo>>,
+    pub total_size: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

@@ -282,3 +282,12 @@ pub async fn get_share(
     let share = svc.get_share(share_id).await?;
     Ok(Json(share))
 }
+
+pub async fn get_shared_file_manifest(
+    State(state): State<AppState>,
+    Path((share_id, file_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FileService::new(&state);
+    let manifest = svc.get_shared_file_manifest(share_id, file_id).await?;
+    Ok(Json(manifest))
+}

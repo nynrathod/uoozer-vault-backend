@@ -1331,7 +1331,6 @@ impl FileService {
         item_id: Uuid,
         req: CreateShareRequest,
     ) -> Result<Uuid, AppError> {
-        // Verify ownership
         if req.item_type == "file" {
             let exists: Option<(Uuid,)> = sqlx::query_as(
             "SELECT file_id FROM files WHERE file_id = $1 AND user_id = $2 AND deleted_at IS NULL"
@@ -1357,18 +1356,19 @@ impl FileService {
 
         let share_id = Uuid::new_v4();
         sqlx::query(
-        "INSERT INTO item_shares (share_id, owner_user_id, item_type, encrypted_payload, encrypted_nonce, encryption_header) 
-         VALUES ($1, $2, $3, $4, $5, $6)"
+        "INSERT INTO item_shares (share_id, owner_user_id, item_id, item_type, encrypted_payload, encrypted_nonce, encryption_header) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7)"
     )
-    .bind(share_id).bind(user_id).bind(&req.item_type)
+    .bind(share_id).bind(user_id).bind(item_id).bind(&req.item_type)
     .bind(&encrypted_payload).bind(&encrypted_nonce).bind(&encryption_header)
     .execute(&self.db).await?;
 
         Ok(share_id)
     }
+
     pub async fn get_share(&self, share_id: Uuid) -> Result<GetShareResponse, AppError> {
         let row = sqlx::query(
-            "SELECT share_id, item_type, encrypted_payload, encrypted_nonce, encryption_header 
+            "SELECT share_id, item_id, item_type, encrypted_payload, encrypted_nonce, encryption_header 
              FROM item_shares WHERE share_id = $1 AND (expires_at IS NULL OR expires_at > now())",
         )
         .bind(share_id)
@@ -1377,16 +1377,81 @@ impl FileService {
 
         let row = row.ok_or(AppError::NotFound)?;
 
+        let item_type: String = row.try_get("item_type")?;
+        let item_id: Uuid = row.try_get("item_id")?;
         let encrypted_payload: Vec<u8> = row.try_get("encrypted_payload")?;
         let encrypted_nonce: Vec<u8> = row.try_get("encrypted_nonce")?;
         let encryption_header: Option<Vec<u8>> = row.try_get("encryption_header")?;
 
+        let (chunks, total_size) = if item_type == "file" {
+            let version_id: Uuid =
+                sqlx::query_scalar("SELECT current_version_id FROM files WHERE file_id = $1")
+                    .bind(item_id)
+                    .fetch_one(&self.db)
+                    .await?;
+
+            let chunk_data: Vec<(i32, i32, i64, String)> = sqlx::query_as(
+                "SELECT chunk_index, segment_index, chunk_size, r2_key FROM file_chunks WHERE version_id = $1 ORDER BY chunk_index",
+            )
+            .bind(version_id).fetch_all(&self.db).await?;
+
+            let total_size: i64 =
+                sqlx::query_scalar("SELECT total_size FROM file_versions WHERE version_id = $1")
+                    .bind(version_id)
+                    .fetch_one(&self.db)
+                    .await?;
+
+            (
+                Some(self.storage.generate_download_urls(&chunk_data).await?),
+                Some(total_size),
+            )
+        } else {
+            (None, None)
+        };
+
         Ok(GetShareResponse {
             share_id: row.try_get("share_id")?,
-            item_type: row.try_get("item_type")?,
+            item_type,
             encrypted_payload: crypto::encode_b64(&encrypted_payload),
             encrypted_nonce: crypto::encode_b64(&encrypted_nonce),
             encryption_header: encryption_header.map(|h| crypto::encode_b64(&h)),
+            chunks,
+            total_size,
+        })
+    }
+
+    pub async fn get_shared_file_manifest(
+        &self,
+        share_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<DownloadManifestResponse, AppError> {
+        let version_id: Uuid =
+            sqlx::query_scalar("SELECT current_version_id FROM files WHERE file_id = $1")
+                .bind(file_id)
+                .fetch_one(&self.db)
+                .await?;
+
+        let version: (Vec<u8>, i64, i32) = sqlx::query_as(
+            "SELECT encryption_header, total_size, total_chunks FROM file_versions WHERE version_id = $1",
+        )
+        .bind(version_id).fetch_one(&self.db).await?;
+
+        let chunks: Vec<(i32, i32, i64, String)> = sqlx::query_as(
+            "SELECT chunk_index, segment_index, chunk_size, r2_key FROM file_chunks WHERE version_id = $1 ORDER BY chunk_index",
+        )
+        .bind(version_id).fetch_all(&self.db).await?;
+
+        let chunk_infos = self.storage.generate_download_urls(&chunks).await?;
+
+        Ok(DownloadManifestResponse {
+            file_id,
+            version_id,
+            encryption_header: crypto::encode_b64(&version.0),
+            total_size: version.1,
+            total_chunks: version.2,
+            wrapped_file_key: "".to_string(),
+            wrapped_file_key_nonce: "".to_string(),
+            chunks: chunk_infos,
         })
     }
 }

@@ -62,4 +62,8 @@ pub fn router() -> Router<AppState> {
             post(handlers::cancel_upload),
         )
         .route("/files/{file_id}/shares", post(handlers::create_share))
+        .route(
+            "/shares/{share_id}/files/{file_id}",
+            get(handlers::get_shared_file_manifest),
+        )
 }
