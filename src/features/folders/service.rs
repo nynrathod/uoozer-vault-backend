@@ -301,27 +301,24 @@ impl FolderService {
             let metadata_nonce = crypto::decode_b64(&req.metadata_nonce)?;
             if metadata_nonce.len() != 24 {
                 return Err(AppError::BadRequest(
-                    "metadata nonce must be 24 bytes".to_string(),
+                    "metadata nonce must be 24 bytes".into(),
                 ));
             }
             let encrypted_metadata = crypto::decode_b64(&req.encrypted_metadata)?;
 
-            if let Some(parent_id) = req.parent_folder_id {
-                self.verify_folder_ownership(parent_id, user_id).await?;
-            }
+            let folder_id = req.folder_id.unwrap_or_else(Uuid::new_v4);
 
-            let folder_id = Uuid::new_v4();
             let folder = sqlx::query_as::<_, FolderResponse>(
-            "INSERT INTO folders (folder_id, user_id, parent_folder_id, encrypted_metadata, metadata_nonce) VALUES ($1, $2, $3, $4, $5) 
-             RETURNING folder_id, parent_folder_id, encrypted_metadata, metadata_nonce, deleted_at, created_at, updated_at",
-        )
-        .bind(folder_id)
-        .bind(user_id)
-        .bind(req.parent_folder_id)
-        .bind(&encrypted_metadata)
-        .bind(&metadata_nonce)
-        .fetch_one(&mut *tx)
-        .await?;
+                "INSERT INTO folders (folder_id, user_id, parent_folder_id, encrypted_metadata, metadata_nonce) VALUES ($1, $2, $3, $4, $5) 
+                 RETURNING folder_id, parent_folder_id, encrypted_metadata, metadata_nonce, deleted_at, created_at, updated_at",
+            )
+            .bind(folder_id)
+            .bind(user_id)
+            .bind(req.parent_folder_id)
+            .bind(&encrypted_metadata)
+            .bind(&metadata_nonce)
+            .fetch_one(&mut *tx)
+            .await?;
 
             state.broadcast_sync(
                 user_id,

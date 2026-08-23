@@ -11,6 +11,9 @@ pub struct CreateFolderRequest {
 
     /// Parent folder UUID. None = root level.
     pub parent_folder_id: Option<Uuid>,
+
+    #[serde(default)]
+    pub folder_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]

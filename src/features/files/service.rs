@@ -605,6 +605,58 @@ impl FileService {
         Ok(())
     }
 
+    /// Validates fields known at bulk-init time.
+    /// Does NOT require plaintext_blake3, encryption_header, or chunk_blake3.
+    async fn validate_bulk_init_request(&self, req: &CreateFileRequest) -> Result<(), AppError> {
+        if crate::core::crypto::decode_b64(&req.encrypted_metadata).is_err() {
+            return Err(AppError::BadRequest(
+                "invalid base64 encoding for encrypted_metadata".into(),
+            ));
+        }
+        let metadata_nonce = crypto::decode_b64(&req.metadata_nonce)?;
+        if metadata_nonce.len() != 24 {
+            return Err(AppError::BadRequest(
+                "metadata nonce must be 24 bytes (XChaCha20-Poly1305)".into(),
+            ));
+        }
+        if req.total_chunks <= 0 || req.total_chunks > MAX_CHUNKS_PER_FILE {
+            return Err(AppError::BadRequest("invalid total_chunks".into()));
+        }
+        if req.chunks.len() as i32 != req.total_chunks {
+            return Err(AppError::BadRequest(
+                "chunks array length does not match total_chunks".into(),
+            ));
+        }
+        if req.total_size < 0 || req.total_size > MAX_FILE_SIZE {
+            return Err(AppError::BadRequest("invalid total_size".into()));
+        }
+
+        let mut total_ciphertext_size: i64 = 0;
+        for (i, chunk) in req.chunks.iter().enumerate() {
+            if chunk.chunk_index != i as i32 {
+                return Err(AppError::BadRequest(
+                    "chunk indices must be sequential starting from 0".into(),
+                ));
+            }
+            if chunk.chunk_size <= 0 {
+                return Err(AppError::BadRequest(format!(
+                    "chunk {} size must be positive",
+                    i
+                )));
+            }
+            total_ciphertext_size += chunk.chunk_size;
+        }
+
+        let expected_ciphertext_size = req.total_size + (req.total_chunks as i64 * 17);
+        if total_ciphertext_size != expected_ciphertext_size {
+            return Err(AppError::BadRequest(format!(
+                "chunk sizes do not match total file size. expected {}, got {}",
+                expected_ciphertext_size, total_ciphertext_size
+            )));
+        }
+        Ok(())
+    }
+
     async fn validate_create_request(&self, req: &CreateFileRequest) -> Result<(), AppError> {
         if crate::core::crypto::decode_b64(&req.encrypted_metadata).is_err() {
             return Err(AppError::BadRequest(
@@ -1104,7 +1156,7 @@ impl FileService {
     ) -> Result<Vec<CreateFileResponse>, AppError> {
         let mut total_bulk_size: i64 = 0;
         for req in &reqs {
-            self.validate_create_request(req).await?;
+            self.validate_bulk_init_request(req).await?;
             total_bulk_size += req.total_size;
         }
 
@@ -1206,7 +1258,18 @@ impl FileService {
 
         for item in uploads {
             let plaintext_blake3 = crypto::decode_b64(&item.plaintext_blake3)?;
+            if plaintext_blake3.len() != 32 {
+                return Err(AppError::BadRequest(
+                    "plaintext_blake3 must be 32 bytes".into(),
+                ));
+            }
+
             let encryption_header = crypto::decode_b64(&item.encryption_header)?;
+            if encryption_header.len() != 24 {
+                return Err(AppError::BadRequest(
+                    "encryption header must be 24 bytes (secretstream)".into(),
+                ));
+            }
 
             sqlx::query("UPDATE file_versions SET encryption_header = $1, plaintext_blake3 = $2 WHERE version_id = $3")
             .bind(&encryption_header).bind(&plaintext_blake3).bind(item.version_id)
@@ -1220,6 +1283,12 @@ impl FileService {
 
             for (chunk_index, chunk_hash_b64) in &item.chunk_hashes {
                 let hash_bytes = crypto::decode_b64(chunk_hash_b64)?;
+                if hash_bytes.len() != 32 {
+                    return Err(AppError::BadRequest(format!(
+                        "chunk {} blake3 must be 32 bytes",
+                        chunk_index
+                    )));
+                }
                 sqlx::query("UPDATE file_chunks SET chunk_blake3 = $1 WHERE version_id = $2 AND chunk_index = $3")
                 .bind(&hash_bytes).bind(item.version_id).bind(chunk_index)
                 .execute(&self.db).await?;
