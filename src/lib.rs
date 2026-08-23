@@ -32,7 +32,10 @@ pub fn build_router(state: AppState) -> Router {
     let cors = state.config.cors.as_cors_layer();
 
     let public_routes = Router::new()
-        .nest("/api/v1", features::auth::routes::public_router())
+        .nest(
+            "/api/v1",
+            features::auth::routes::public_router().merge(features::files::routes::public_router()),
+        )
         .route("/health", axum::routing::get(health_check))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

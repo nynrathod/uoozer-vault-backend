@@ -31,6 +31,31 @@ pub struct CreateFileRequest {
     /// Chunk plan: each chunk's index, size, and ciphertext BLAKE3 hash.
     #[validate(length(min = 1, message = "at least one chunk is required"))]
     pub chunks: Vec<ChunkPlan>,
+
+    pub wrapped_file_key: String,
+    pub wrapped_file_key_nonce: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateShareRequest {
+    pub item_type: String,
+    pub encrypted_payload: String,
+    pub encrypted_nonce: String,
+    pub encryption_header: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateShareResponse {
+    pub share_id: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GetShareResponse {
+    pub share_id: Uuid,
+    pub item_type: String,
+    pub encrypted_payload: String,
+    pub encrypted_nonce: String,
+    pub encryption_header: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -63,6 +88,9 @@ pub struct FileResponse {
     pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub wrapped_file_key: Option<String>,
+    pub wrapped_file_key_nonce: Option<String>,
+    pub encryption_header: Option<String>,
 }
 
 impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for FileResponse {
@@ -71,6 +99,10 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for FileResponse {
 
         let encrypted_metadata: Vec<u8> = row.try_get("encrypted_metadata")?;
         let metadata_nonce: Vec<u8> = row.try_get("metadata_nonce")?;
+
+        let wrapped_file_key: Option<Vec<u8>> = row.try_get("wrapped_file_key").ok();
+        let wrapped_file_key_nonce: Option<Vec<u8>> = row.try_get("wrapped_file_key_nonce").ok();
+        let encryption_header: Option<Vec<u8>> = row.try_get("encryption_header").ok();
 
         Ok(Self {
             file_id: row.try_get("file_id")?,
@@ -83,6 +115,10 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for FileResponse {
             deleted_at: row.try_get("deleted_at")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
+            wrapped_file_key: wrapped_file_key.map(|k| crate::core::crypto::encode_b64(&k)),
+            wrapped_file_key_nonce: wrapped_file_key_nonce
+                .map(|k| crate::core::crypto::encode_b64(&k)),
+            encryption_header: encryption_header.map(|h| crate::core::crypto::encode_b64(&h)),
         })
     }
 }
@@ -114,6 +150,8 @@ pub struct DownloadManifestResponse {
     pub total_size: i64,
     pub total_chunks: i32,
     pub chunks: Vec<DownloadChunkInfo>,
+    pub wrapped_file_key: String,
+    pub wrapped_file_key_nonce: String,
 }
 
 // ── Versions ──────────────────────────────────────────────────
@@ -190,6 +228,8 @@ pub struct BulkCompleteUploadItem {
     pub plaintext_blake3: String,
     pub encryption_header: String,
     pub chunk_hashes: std::collections::HashMap<i32, String>,
+    pub wrapped_file_key: String,
+    pub wrapped_file_key_nonce: String,
 }
 
 #[derive(Debug, Deserialize)]

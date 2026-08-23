@@ -7,6 +7,10 @@ use axum::{
 use super::handlers;
 use crate::app_state::AppState;
 
+pub fn public_router() -> Router<AppState> {
+    Router::new().route("/shares/{share_id}", get(handlers::get_share))
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/files/precheck", get(handlers::precheck_upload))
@@ -57,4 +61,5 @@ pub fn router() -> Router<AppState> {
             "/files/{file_id}/versions/{version_id}/cancel",
             post(handlers::cancel_upload),
         )
+        .route("/files/{file_id}/shares", post(handlers::create_share))
 }

@@ -4,7 +4,7 @@ use axum::{
 };
 
 use super::handlers;
-use crate::app_state::AppState;
+use crate::{app_state::AppState, features::files::handlers::create_share};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -19,4 +19,5 @@ pub fn router() -> Router<AppState> {
                 .patch(handlers::update_folder)
                 .delete(handlers::delete_folder),
         )
+        .route("/folders/{folder_id}/shares", post(create_share))
 }

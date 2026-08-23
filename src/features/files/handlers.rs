@@ -262,3 +262,23 @@ pub async fn bulk_complete_uploads(
         .await?;
     Ok(Json(resp))
 }
+
+pub async fn create_share(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(item_id): Path<Uuid>,
+    Json(req): Json<CreateShareRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FileService::new(&state);
+    let share_id = svc.create_share(user.user_id, item_id, req).await?;
+    Ok((StatusCode::CREATED, Json(CreateShareResponse { share_id })))
+}
+
+pub async fn get_share(
+    State(state): State<AppState>,
+    Path(share_id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FileService::new(&state);
+    let share = svc.get_share(share_id).await?;
+    Ok(Json(share))
+}

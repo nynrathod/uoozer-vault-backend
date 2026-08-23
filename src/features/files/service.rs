@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use dashmap::DashMap;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -302,12 +302,14 @@ impl FileService {
     pub async fn get_file(&self, user_id: Uuid, file_id: Uuid) -> Result<FileResponse, AppError> {
         let file = sqlx::query_as::<_, FileResponse>(
             "SELECT f.file_id, f.folder_id, f.encrypted_metadata, f.metadata_nonce,
-                    f.total_size, f.current_version_id, f.deleted_at, -- FIX: Added f.deleted_at
+                    f.total_size, f.current_version_id, f.deleted_at,
                     (f.current_version_id IS NOT NULL AND NOT COALESCE(
                         (SELECT v.is_active FROM file_versions v WHERE v.version_id = f.current_version_id), false
                     )) AS is_uploading,
-                    f.created_at, f.updated_at
+                    f.created_at, f.updated_at,
+                    v.wrapped_file_key, v.wrapped_file_key_nonce, v.encryption_header
              FROM files f
+             LEFT JOIN file_versions v ON f.current_version_id = v.version_id
              WHERE f.file_id = $1 AND f.user_id = $2 AND f.deleted_at IS NULL",
         )
         .bind(file_id).bind(user_id).fetch_optional(&self.db).await?;
@@ -491,10 +493,10 @@ impl FileService {
             ));
         }
 
-        let version: (Vec<u8>, i64, i32) = sqlx::query_as(
-            "SELECT encryption_header, total_size, total_chunks FROM file_versions WHERE version_id = $1",
-        )
-        .bind(target_version_id).fetch_one(&self.db).await?;
+        let version: (Vec<u8>, i64, i32, Vec<u8>, Vec<u8>) = sqlx::query_as(
+    "SELECT encryption_header, total_size, total_chunks, wrapped_file_key, wrapped_file_key_nonce FROM file_versions WHERE version_id = $1",
+)
+.bind(target_version_id).fetch_one(&self.db).await?;
 
         let chunks: Vec<(i32, i32, i64, String)> = sqlx::query_as(
             "SELECT chunk_index, segment_index, chunk_size, r2_key FROM file_chunks WHERE version_id = $1 ORDER BY chunk_index",
@@ -509,6 +511,8 @@ impl FileService {
             encryption_header: crypto::encode_b64(&version.0),
             total_size: version.1,
             total_chunks: version.2,
+            wrapped_file_key: crypto::encode_b64(&version.3), // ADDED
+            wrapped_file_key_nonce: crypto::encode_b64(&version.4), // ADDED
             chunks: chunk_infos,
         })
     }
@@ -1271,8 +1275,13 @@ impl FileService {
                 ));
             }
 
-            sqlx::query("UPDATE file_versions SET encryption_header = $1, plaintext_blake3 = $2 WHERE version_id = $3")
-            .bind(&encryption_header).bind(&plaintext_blake3).bind(item.version_id)
+            let wrapped_file_key = crypto::decode_b64(&item.wrapped_file_key)?;
+            let wrapped_file_key_nonce = crypto::decode_b64(&item.wrapped_file_key_nonce)?;
+
+            sqlx::query("UPDATE file_versions SET encryption_header = $1, plaintext_blake3 = $2, wrapped_file_key = $3, wrapped_file_key_nonce = $4 WHERE version_id = $5")
+            .bind(&encryption_header).bind(&plaintext_blake3)
+            .bind(&wrapped_file_key).bind(&wrapped_file_key_nonce)
+            .bind(item.version_id)
             .execute(&self.db).await?;
 
             sqlx::query("UPDATE files SET plaintext_blake3 = $1 WHERE current_version_id = $2")
@@ -1314,5 +1323,70 @@ impl FileService {
         }
 
         Ok(crate::features::files::dto::BulkCompleteUploadResponse { completed, failed })
+    }
+
+    pub async fn create_share(
+        &self,
+        user_id: Uuid,
+        item_id: Uuid,
+        req: CreateShareRequest,
+    ) -> Result<Uuid, AppError> {
+        // Verify ownership
+        if req.item_type == "file" {
+            let exists: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT file_id FROM files WHERE file_id = $1 AND user_id = $2 AND deleted_at IS NULL"
+        ).bind(item_id).bind(user_id).fetch_optional(&self.db).await?;
+            if exists.is_none() {
+                return Err(AppError::NotFound);
+            }
+        } else {
+            let exists: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT folder_id FROM folders WHERE folder_id = $1 AND user_id = $2 AND deleted_at IS NULL"
+        ).bind(item_id).bind(user_id).fetch_optional(&self.db).await?;
+            if exists.is_none() {
+                return Err(AppError::NotFound);
+            }
+        }
+
+        let encrypted_payload = crypto::decode_b64(&req.encrypted_payload)?;
+        let encrypted_nonce = crypto::decode_b64(&req.encrypted_nonce)?;
+        let encryption_header = match req.encryption_header {
+            Some(h) => Some(crypto::decode_b64(&h)?),
+            None => None,
+        };
+
+        let share_id = Uuid::new_v4();
+        sqlx::query(
+        "INSERT INTO item_shares (share_id, owner_user_id, item_type, encrypted_payload, encrypted_nonce, encryption_header) 
+         VALUES ($1, $2, $3, $4, $5, $6)"
+    )
+    .bind(share_id).bind(user_id).bind(&req.item_type)
+    .bind(&encrypted_payload).bind(&encrypted_nonce).bind(&encryption_header)
+    .execute(&self.db).await?;
+
+        Ok(share_id)
+    }
+    pub async fn get_share(&self, share_id: Uuid) -> Result<GetShareResponse, AppError> {
+        let row = sqlx::query(
+            "SELECT share_id, item_type, encrypted_payload, encrypted_nonce, encryption_header 
+             FROM item_shares WHERE share_id = $1 AND (expires_at IS NULL OR expires_at > now())",
+        )
+        .bind(share_id)
+        .fetch_optional(&self.db)
+        .await?;
+
+        let row = row.ok_or(AppError::NotFound)?;
+
+        let encrypted_payload: Vec<u8> = row.try_get("encrypted_payload")?;
+        let encrypted_nonce: Vec<u8> = row.try_get("encrypted_nonce")?;
+        let encryption_header: Option<Vec<u8>> = row.try_get("encryption_header")?;
+
+        Ok(GetShareResponse {
+            share_id: row.try_get("share_id")?,
+            item_type: row.try_get("item_type")?,
+            encrypted_payload: crypto::encode_b64(&encrypted_payload),
+            encrypted_nonce: crypto::encode_b64(&encrypted_nonce),
+            encryption_header: encryption_header.map(|h| crypto::encode_b64(&h)),
+        })
     }
 }
