@@ -96,7 +96,7 @@ impl FolderService {
         self.verify_folder_ownership(folder_id, user_id).await?;
 
         let folder = sqlx::query_as::<_, FolderResponse>(
-            "SELECT folder_id, parent_folder_id, encrypted_metadata, metadata_nonce, created_at, updated_at FROM folders WHERE folder_id = $1 AND deleted_at IS NULL",
+            "SELECT folder_id, parent_folder_id, encrypted_metadata, metadata_nonce, deleted_at, created_at, updated_at FROM folders WHERE folder_id = $1 AND deleted_at IS NULL",
         )
         .bind(folder_id)
         .fetch_one(&self.db)
