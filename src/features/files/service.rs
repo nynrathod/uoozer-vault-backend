@@ -121,13 +121,17 @@ impl FileService {
         .bind(&plaintext_blake3).bind(req.total_size)
         .execute(&mut *tx).await?;
 
+        let wrapped_file_key = crypto::decode_b64(&req.wrapped_file_key)?;
+        let wrapped_file_key_nonce = crypto::decode_b64(&req.wrapped_file_key_nonce)?;
+
         sqlx::query(
-            "INSERT INTO file_versions (version_id, file_id, version_number, encryption_header, total_size, total_chunks, plaintext_blake3, created_by_device_id, is_active)
-             VALUES ($1, $2, 1, $3, $4, $5, $6, $7, false)",
+            "INSERT INTO file_versions (version_id, file_id, version_number, encryption_header, total_size, total_chunks, plaintext_blake3, created_by_device_id, is_active, wrapped_file_key, wrapped_file_key_nonce)
+             VALUES ($1, $2, 1, $3, $4, $5, $6, $7, false, $8, $9)",
         )
         .bind(version_id).bind(file_id).bind(&encryption_header)
         .bind(req.total_size).bind(req.total_chunks)
         .bind(&plaintext_blake3).bind(device_id)
+        .bind(&wrapped_file_key).bind(&wrapped_file_key_nonce)
         .execute(&mut *tx).await?;
 
         sqlx::query("UPDATE files SET current_version_id = $1 WHERE file_id = $2")
@@ -247,13 +251,17 @@ impl FileService {
         .fetch_one(&mut *tx)
         .await?;
 
+        let wrapped_file_key = crypto::decode_b64(&req.wrapped_file_key)?;
+        let wrapped_file_key_nonce = crypto::decode_b64(&req.wrapped_file_key_nonce)?;
+
         sqlx::query(
-            "INSERT INTO file_versions (version_id, file_id, version_number, encryption_header, total_size, total_chunks, plaintext_blake3, created_by_device_id, is_active)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false)",
+            "INSERT INTO file_versions (version_id, file_id, version_number, encryption_header, total_size, total_chunks, plaintext_blake3, created_by_device_id, is_active, wrapped_file_key, wrapped_file_key_nonce)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, $9, $10)",
         )
         .bind(version_id).bind(file_id).bind(next_version_number)
         .bind(&encryption_header).bind(req.total_size).bind(req.total_chunks)
         .bind(&plaintext_blake3).bind(device_id)
+        .bind(&wrapped_file_key).bind(&wrapped_file_key_nonce)
         .execute(&mut *tx).await?;
 
         for chunk in &req.chunks {
@@ -474,7 +482,7 @@ impl FileService {
                 Some(vid) => {
                     let exists: Option<(Uuid,)> = sqlx::query_as(
                     "SELECT v.version_id FROM file_versions v JOIN files f ON f.file_id = v.file_id
-                     WHERE v.version_id = $1 AND f.user_id = $2 AND v.is_active = true",
+                     WHERE v.version_id = $1 AND f.user_id = $2 AND f.deleted_at IS NULL",
                 )
                 .bind(vid).bind(user_id).fetch_optional(&self.db).await?;
                     if exists.is_none() {
@@ -494,9 +502,9 @@ impl FileService {
         }
 
         let version: (Vec<u8>, i64, i32, Vec<u8>, Vec<u8>) = sqlx::query_as(
-    "SELECT encryption_header, total_size, total_chunks, wrapped_file_key, wrapped_file_key_nonce FROM file_versions WHERE version_id = $1",
-)
-.bind(target_version_id).fetch_one(&self.db).await?;
+            "SELECT encryption_header, total_size, total_chunks, wrapped_file_key, wrapped_file_key_nonce FROM file_versions WHERE version_id = $1",
+        )
+        .bind(target_version_id).fetch_one(&self.db).await?;
 
         let chunks: Vec<(i32, i32, i64, String)> = sqlx::query_as(
             "SELECT chunk_index, segment_index, chunk_size, r2_key FROM file_chunks WHERE version_id = $1 ORDER BY chunk_index",
@@ -511,8 +519,8 @@ impl FileService {
             encryption_header: crypto::encode_b64(&version.0),
             total_size: version.1,
             total_chunks: version.2,
-            wrapped_file_key: crypto::encode_b64(&version.3), // ADDED
-            wrapped_file_key_nonce: crypto::encode_b64(&version.4), // ADDED
+            wrapped_file_key: crypto::encode_b64(&version.3),
+            wrapped_file_key_nonce: crypto::encode_b64(&version.4),
             chunks: chunk_infos,
         })
     }
@@ -1127,7 +1135,20 @@ impl FileService {
         version_id: Option<Uuid>,
     ) -> Result<bool, AppError> {
         let target_version_id = match version_id {
-            Some(vid) => vid,
+            Some(vid) => {
+                let exists: Option<(Uuid,)> = sqlx::query_as(
+                    "SELECT v.version_id FROM file_versions v JOIN files f ON f.file_id = v.file_id
+                     WHERE v.version_id = $1 AND f.user_id = $2 AND f.deleted_at IS NULL",
+                )
+                .bind(vid)
+                .bind(user_id)
+                .fetch_optional(&self.db)
+                .await?;
+                if exists.is_none() {
+                    return Err(AppError::NotFound);
+                }
+                vid
+            }
             None => {
                 let row: Option<(Option<Uuid>,)> = sqlx::query_as(
                 "SELECT current_version_id FROM files WHERE file_id = $1 AND user_id = $2 AND deleted_at IS NULL",
@@ -1407,32 +1428,33 @@ impl FileService {
         let item_id: Uuid = row.try_get("item_id")?;
         let encrypted_payload: Vec<u8> = row.try_get("encrypted_payload")?;
         let encrypted_nonce: Vec<u8> = row.try_get("encrypted_nonce")?;
-        let encryption_header: Option<Vec<u8>> = row.try_get("encryption_header")?;
 
-        let (chunks, total_size) = if item_type == "file" {
+        let (chunks, total_size, encryption_header) = if item_type == "file" {
             let version_id: Uuid =
                 sqlx::query_scalar("SELECT current_version_id FROM files WHERE file_id = $1")
                     .bind(item_id)
                     .fetch_one(&self.db)
                     .await?;
 
+            let version_info: (Vec<u8>, i64) = sqlx::query_as(
+                "SELECT encryption_header, total_size FROM file_versions WHERE version_id = $1",
+            )
+            .bind(version_id)
+            .fetch_one(&self.db)
+            .await?;
+
             let chunk_data: Vec<(i32, i32, i64, String)> = sqlx::query_as(
                 "SELECT chunk_index, segment_index, chunk_size, r2_key FROM file_chunks WHERE version_id = $1 ORDER BY chunk_index",
             )
             .bind(version_id).fetch_all(&self.db).await?;
 
-            let total_size: i64 =
-                sqlx::query_scalar("SELECT total_size FROM file_versions WHERE version_id = $1")
-                    .bind(version_id)
-                    .fetch_one(&self.db)
-                    .await?;
-
             (
                 Some(self.storage.generate_download_urls(&chunk_data).await?),
-                Some(total_size),
+                Some(version_info.1),
+                Some(version_info.0),
             )
         } else {
-            (None, None)
+            (None, None, None)
         };
 
         Ok(GetShareResponse {
@@ -1617,5 +1639,59 @@ impl FileService {
                 },
             )
             .collect())
+    }
+
+    pub async fn delete_version(
+        &self,
+        user_id: Uuid,
+        file_id: Uuid,
+        version_id: Uuid,
+    ) -> Result<(), AppError> {
+        let mut tx = self.db.begin().await?;
+
+        let version: Option<(bool,)> = sqlx::query_as(
+            "SELECT v.is_active FROM file_versions v 
+             JOIN files f ON v.file_id = f.file_id 
+             WHERE v.version_id = $1 AND f.file_id = $2 AND f.user_id = $3 AND f.deleted_at IS NULL FOR UPDATE",
+        )
+        .bind(version_id).bind(file_id).bind(user_id).fetch_optional(&mut *tx).await?;
+
+        let (is_active,) = version.ok_or(AppError::NotFound)?;
+        if is_active {
+            return Err(AppError::BadRequest(
+                "Cannot delete the active version. Restore another version first.".into(),
+            ));
+        }
+
+        let r2_keys: Vec<String> =
+            sqlx::query_scalar("SELECT r2_key FROM file_chunks WHERE version_id = $1")
+                .bind(version_id)
+                .fetch_all(&mut *tx)
+                .await?;
+
+        sqlx::query("DELETE FROM file_chunks WHERE version_id = $1")
+            .bind(version_id)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query("DELETE FROM file_versions WHERE version_id = $1")
+            .bind(version_id)
+            .execute(&mut *tx)
+            .await?;
+
+        audit::log(
+            &mut *tx,
+            Some(user_id),
+            None,
+            "file_version_deleted",
+            &serde_json::json!({ "file_id": file_id, "version_id": version_id }),
+        )
+        .await?;
+
+        tx.commit().await?;
+
+        self.storage.delete_objects_best_effort(&r2_keys).await;
+
+        Ok(())
     }
 }

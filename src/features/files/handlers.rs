@@ -328,3 +328,14 @@ pub async fn list_shares(
     let shares = svc.list_shares(user.user_id).await?;
     Ok(Json(ListSharesResponse { shares }))
 }
+
+pub async fn delete_version(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path((file_id, version_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FileService::new(&state);
+    svc.delete_version(user.user_id, file_id, version_id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}

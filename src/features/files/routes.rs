@@ -53,6 +53,10 @@ pub fn router() -> Router<AppState> {
                 .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
                 .get(handlers::list_versions),
         )
+        .route(
+            "/files/{file_id}/versions/{version_id}",
+            axum::routing::delete(handlers::delete_version),
+        )
         .route("/files/{file_id}/complete", post(handlers::complete_upload))
         .route(
             "/files/{file_id}/download",
