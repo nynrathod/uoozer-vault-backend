@@ -193,10 +193,21 @@ impl FolderService {
     ) -> Result<(), AppError> {
         self.verify_folder_ownership(folder_id, user_id).await?;
 
-        sqlx::query("UPDATE folders SET deleted_at = now() WHERE folder_id = $1")
-            .bind(folder_id)
-            .execute(&self.db)
-            .await?;
+        let mut tx = self.db.begin().await?;
+
+        let all_folder_ids =
+            Self::get_descendant_folder_ids(&mut *tx, &[folder_id], user_id).await?;
+
+        sqlx::query(
+            "UPDATE files SET deleted_at = now(), updated_at = now() 
+             WHERE folder_id = ANY($1) AND user_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(&all_folder_ids)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+        Self::soft_delete_many(&mut *tx, &all_folder_ids, user_id).await?;
 
         state.broadcast_sync(
             user_id,
@@ -208,6 +219,71 @@ impl FolderService {
                 payload: serde_json::json!({}),
             },
         );
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn permanent_delete_folder(
+        &self,
+        user_id: Uuid,
+        folder_id: Uuid,
+        state: &AppState,
+    ) -> Result<(), AppError> {
+        let exists: Option<(Uuid,)> =
+            sqlx::query_as("SELECT folder_id FROM folders WHERE folder_id = $1 AND user_id = $2")
+                .bind(folder_id)
+                .bind(user_id)
+                .fetch_optional(&self.db)
+                .await?;
+
+        if exists.is_none() {
+            return Err(AppError::NotFound);
+        }
+
+        let all_folder_ids: Vec<Uuid> = sqlx::query_scalar(
+            r#"
+            WITH RECURSIVE descendants AS (
+                SELECT folder_id FROM folders WHERE folder_id = $1
+                UNION ALL
+                SELECT f.folder_id FROM folders f
+                INNER JOIN descendants d ON f.parent_folder_id = d.folder_id
+            )
+            SELECT folder_id FROM descendants
+            "#,
+        )
+        .bind(folder_id)
+        .fetch_all(&self.db)
+        .await?;
+
+        let mut tx = self.db.begin().await?;
+
+        let r2_keys: Vec<String> = sqlx::query_scalar(
+            "SELECT c.r2_key FROM file_chunks c 
+             JOIN file_versions v ON c.version_id = v.version_id 
+             JOIN files f ON v.file_id = f.file_id 
+             WHERE f.folder_id = ANY($1) AND f.user_id = $2",
+        )
+        .bind(&all_folder_ids)
+        .bind(user_id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        sqlx::query("DELETE FROM files WHERE folder_id = ANY($1) AND user_id = $2")
+            .bind(&all_folder_ids)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query("DELETE FROM folders WHERE folder_id = ANY($1) AND user_id = $2")
+            .bind(&all_folder_ids)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+
+        state.storage.delete_objects_best_effort(&r2_keys).await;
 
         Ok(())
     }
@@ -415,5 +491,63 @@ impl FolderService {
                 },
             )
             .collect())
+    }
+
+    pub async fn restore_folder(
+        &self,
+        user_id: Uuid,
+        folder_id: Uuid,
+        state: &AppState,
+    ) -> Result<(), AppError> {
+        let mut tx = self.db.begin().await?;
+
+        let all_folder_ids: Vec<Uuid> = sqlx::query_scalar(
+            r#"
+            WITH RECURSIVE descendants AS (
+                SELECT folder_id FROM folders WHERE folder_id = $1 AND user_id = $2
+                UNION ALL
+                SELECT f.folder_id FROM folders f
+                INNER JOIN descendants d ON f.parent_folder_id = d.folder_id
+                WHERE f.user_id = $2
+            )
+            SELECT folder_id FROM descendants
+            "#,
+        )
+        .bind(folder_id)
+        .bind(user_id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "UPDATE files SET deleted_at = NULL, updated_at = now() 
+             WHERE folder_id = ANY($1) AND user_id = $2 AND deleted_at IS NOT NULL",
+        )
+        .bind(&all_folder_ids)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "UPDATE folders SET deleted_at = NULL, updated_at = now() 
+             WHERE folder_id = ANY($1) AND user_id = $2 AND deleted_at IS NOT NULL",
+        )
+        .bind(&all_folder_ids)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+        state.broadcast_sync(
+            user_id,
+            SyncEvent {
+                seq: 0,
+                event_type: "restored".to_string(),
+                resource_type: "folder".to_string(),
+                resource_id: folder_id,
+                payload: serde_json::json!({}),
+            },
+        );
+
+        tx.commit().await?;
+        Ok(())
     }
 }

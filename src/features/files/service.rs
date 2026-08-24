@@ -924,59 +924,103 @@ impl FileService {
         let mut tx = self.db.begin().await?;
         let mut r2_keys_to_delete = Vec::new();
 
-        if !req.file_ids.is_empty() {
-            let chunk_keys: Vec<String> = sqlx::query_scalar(
-                "SELECT c.r2_key FROM file_chunks c JOIN file_versions v ON c.version_id = v.version_id JOIN files f ON v.file_id = f.file_id
-                 WHERE f.file_id = ANY($1) AND f.user_id = $2",
-            )
-            .bind(&req.file_ids).bind(user_id).fetch_all(&mut *tx).await?;
-
-            r2_keys_to_delete.extend(chunk_keys);
-
-            sqlx::query("UPDATE files SET deleted_at = now(), updated_at = now() WHERE file_id = ANY($1) AND user_id = $2")
-                .bind(&req.file_ids).bind(user_id).execute(&mut *tx).await?;
-        }
-
-        if !req.folder_ids.is_empty() {
-            let all_folder_ids =
-                FolderService::get_descendant_folder_ids(&mut *tx, &req.folder_ids, user_id)
-                    .await?;
-
-            let files_in_folders: Vec<Uuid> = sqlx::query_scalar(
-                "SELECT file_id FROM files WHERE folder_id = ANY($1) AND user_id = $2 AND deleted_at IS NULL",
-            )
-            .bind(&all_folder_ids).bind(user_id).fetch_all(&mut *tx).await?;
-
-            if !files_in_folders.is_empty() {
+        if req.permanent {
+            if !req.file_ids.is_empty() {
                 let chunk_keys: Vec<String> = sqlx::query_scalar(
                     "SELECT c.r2_key FROM file_chunks c JOIN file_versions v ON c.version_id = v.version_id JOIN files f ON v.file_id = f.file_id
                      WHERE f.file_id = ANY($1) AND f.user_id = $2",
                 )
-                .bind(&files_in_folders).bind(user_id).fetch_all(&mut *tx).await?;
-
+                .bind(&req.file_ids).bind(user_id).fetch_all(&mut *tx).await?;
                 r2_keys_to_delete.extend(chunk_keys);
 
-                sqlx::query("UPDATE files SET deleted_at = now(), updated_at = now() WHERE file_id = ANY($1) AND user_id = $2")
-                    .bind(&files_in_folders).bind(user_id).execute(&mut *tx).await?;
+                sqlx::query("DELETE FROM files WHERE file_id = ANY($1) AND user_id = $2")
+                    .bind(&req.file_ids)
+                    .bind(user_id)
+                    .execute(&mut *tx)
+                    .await?;
             }
 
-            FolderService::soft_delete_many(&mut *tx, &all_folder_ids, user_id).await?;
+            if !req.folder_ids.is_empty() {
+                let all_folder_ids: Vec<Uuid> = sqlx::query_scalar(
+                    r#"
+                    WITH RECURSIVE descendants AS (
+                        SELECT folder_id FROM folders WHERE folder_id = ANY($1) AND user_id = $2
+                        UNION ALL
+                        SELECT f.folder_id FROM folders f
+                        INNER JOIN descendants d ON f.parent_folder_id = d.folder_id
+                    )
+                    SELECT folder_id FROM descendants
+                    "#,
+                )
+                .bind(&req.folder_ids)
+                .bind(user_id)
+                .fetch_all(&mut *tx)
+                .await?;
+
+                let chunk_keys: Vec<String> = sqlx::query_scalar(
+                    "SELECT c.r2_key FROM file_chunks c JOIN file_versions v ON c.version_id = v.version_id JOIN files f ON v.file_id = f.file_id
+                     WHERE f.folder_id = ANY($1) AND f.user_id = $2",
+                )
+                .bind(&all_folder_ids).bind(user_id).fetch_all(&mut *tx).await?;
+                r2_keys_to_delete.extend(chunk_keys);
+
+                sqlx::query("DELETE FROM files WHERE folder_id = ANY($1) AND user_id = $2")
+                    .bind(&all_folder_ids)
+                    .bind(user_id)
+                    .execute(&mut *tx)
+                    .await?;
+
+                sqlx::query("DELETE FROM folders WHERE folder_id = ANY($1) AND user_id = $2")
+                    .bind(&all_folder_ids)
+                    .bind(user_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        } else {
+            if !req.file_ids.is_empty() {
+                sqlx::query("UPDATE files SET deleted_at = now(), updated_at = now() WHERE file_id = ANY($1) AND user_id = $2")
+                    .bind(&req.file_ids).bind(user_id).execute(&mut *tx).await?;
+            }
+
+            if !req.folder_ids.is_empty() {
+                let all_folder_ids =
+                    FolderService::get_descendant_folder_ids(&mut *tx, &req.folder_ids, user_id)
+                        .await?;
+
+                let files_in_folders: Vec<Uuid> = sqlx::query_scalar(
+                    "SELECT file_id FROM files WHERE folder_id = ANY($1) AND user_id = $2 AND deleted_at IS NULL",
+                )
+                .bind(&all_folder_ids).bind(user_id).fetch_all(&mut *tx).await?;
+
+                if !files_in_folders.is_empty() {
+                    sqlx::query("UPDATE files SET deleted_at = now(), updated_at = now() WHERE file_id = ANY($1) AND user_id = $2")
+                        .bind(&files_in_folders).bind(user_id).execute(&mut *tx).await?;
+                }
+
+                FolderService::soft_delete_many(&mut *tx, &all_folder_ids, user_id).await?;
+            }
         }
 
         audit::log(
             &mut *tx,
             Some(user_id),
             Some(device_id),
-            "bulk_delete",
+            if req.permanent {
+                "bulk_permanent_delete"
+            } else {
+                "bulk_delete"
+            },
             &serde_json::json!({ "file_ids": req.file_ids, "folder_ids": req.folder_ids }),
         )
         .await?;
 
         tx.commit().await?;
 
-        self.storage
-            .delete_objects_best_effort(&r2_keys_to_delete)
-            .await;
+        if !r2_keys_to_delete.is_empty() {
+            self.storage
+                .delete_objects_best_effort(&r2_keys_to_delete)
+                .await;
+        }
 
         Ok(())
     }

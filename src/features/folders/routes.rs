@@ -19,6 +19,14 @@ pub fn router() -> Router<AppState> {
                 .patch(handlers::update_folder)
                 .delete(handlers::delete_folder),
         )
+        .route(
+            "/folders/{folder_id}/permanent",
+            axum::routing::delete(handlers::permanent_delete_folder),
+        )
+        .route(
+            "/folders/{folder_id}/restore",
+            axum::routing::post(handlers::restore_folder),
+        )
         .route("/folders/{folder_id}/shares", post(create_share))
         .route(
             "/folders/{folder_id}/tree",

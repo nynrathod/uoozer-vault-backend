@@ -101,3 +101,24 @@ pub async fn get_folder_file_tree(
     let tree = svc.get_folder_file_tree(user.user_id, folder_id).await?;
     Ok(Json(tree))
 }
+
+pub async fn permanent_delete_folder(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(folder_id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FolderService::new(state.db.clone());
+    svc.permanent_delete_folder(user.user_id, folder_id, &state)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn restore_folder(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(folder_id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FolderService::new(state.db.clone());
+    svc.restore_folder(user.user_id, folder_id, &state).await?;
+    Ok(StatusCode::NO_CONTENT)
+}

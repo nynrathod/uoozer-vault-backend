@@ -220,6 +220,8 @@ pub struct ListFilesResponse {
 pub struct BulkDeleteRequest {
     pub file_ids: Vec<uuid::Uuid>,
     pub folder_ids: Vec<uuid::Uuid>,
+    #[serde(default)]
+    pub permanent: bool,
 }
 
 #[derive(Debug, serde::Deserialize)]
