@@ -33,6 +33,18 @@ pub struct BulkCreateFoldersRequest {
     pub folders: Vec<CreateFolderRequest>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct FlatTreeNode {
+    pub id: Uuid,
+    pub parent_id: Option<Uuid>,
+    pub node_type: String,
+    pub encrypted_metadata: String,
+    pub metadata_nonce: String,
+    pub wrapped_file_key: Option<String>,
+    pub wrapped_file_key_nonce: Option<String>,
+    pub total_size: Option<i64>,
+}
+
 impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for FolderResponse {
     fn from_row(row: &'r sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
         use sqlx::Row;

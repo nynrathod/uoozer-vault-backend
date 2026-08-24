@@ -46,6 +46,7 @@ pub struct CreateShareRequest {
     pub encryption_header: Option<String>,
     pub item_id: Uuid,
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub access_type: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -62,6 +63,7 @@ pub struct GetShareResponse {
     pub encryption_header: Option<String>,
     pub chunks: Option<Vec<DownloadChunkInfo>>,
     pub total_size: Option<i64>,
+    pub access_type: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -72,6 +74,7 @@ pub struct ShareListItem {
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
     pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub access_type: String,
 }
 
 #[derive(Debug, Serialize)]

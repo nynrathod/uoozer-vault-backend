@@ -82,7 +82,10 @@ impl CorsConfig {
             .collect();
 
         if origins.is_empty() {
-            CorsLayer::new().allow_origin(Any)
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any)
         } else {
             CorsLayer::new()
                 .allow_origin(origins)

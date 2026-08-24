@@ -3,7 +3,7 @@ use axum::{
     extract::{Path, Query, State},
     response::IntoResponse,
 };
-use http::StatusCode;
+use http::{HeaderMap, StatusCode, header};
 use serde::Deserialize;
 use uuid::Uuid;
 use validator::Validate;
@@ -277,18 +277,36 @@ pub async fn create_share(
 pub async fn get_share(
     State(state): State<AppState>,
     Path(share_id): Path<Uuid>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
+    let is_authenticated = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|token| state.jwt_keys.verify_access_token(token).is_ok())
+        .unwrap_or(false);
+
     let svc = FileService::new(&state);
-    let share = svc.get_share(share_id).await?;
+    let share = svc.get_share(share_id, is_authenticated).await?;
     Ok(Json(share))
 }
 
 pub async fn get_shared_file_manifest(
     State(state): State<AppState>,
     Path((share_id, file_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
+    let is_authenticated = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|token| state.jwt_keys.verify_access_token(token).is_ok())
+        .unwrap_or(false);
+
     let svc = FileService::new(&state);
-    let manifest = svc.get_shared_file_manifest(share_id, file_id).await?;
+    let manifest = svc
+        .get_shared_file_manifest(share_id, file_id, is_authenticated)
+        .await?;
     Ok(Json(manifest))
 }
 

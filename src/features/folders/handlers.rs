@@ -91,3 +91,13 @@ pub async fn create_folders_bulk(
         .await?;
     Ok((StatusCode::CREATED, Json(folders)))
 }
+
+pub async fn get_folder_file_tree(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(folder_id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FolderService::new(state.db);
+    let tree = svc.get_folder_file_tree(user.user_id, folder_id).await?;
+    Ok(Json(tree))
+}

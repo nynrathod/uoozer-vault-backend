@@ -1354,14 +1354,16 @@ impl FileService {
             None => None,
         };
 
+        let access_type = req.access_type.unwrap_or_else(|| "public".to_string());
+
         let share_id = Uuid::new_v4();
         sqlx::query(
-        "INSERT INTO item_shares (share_id, owner_user_id, item_id, item_type, encrypted_payload, encrypted_nonce, encryption_header, expires_at) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+        "INSERT INTO item_shares (share_id, owner_user_id, item_id, item_type, encrypted_payload, encrypted_nonce, encryption_header, expires_at, access_type) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
     )
     .bind(share_id).bind(user_id).bind(item_id).bind(&req.item_type)
     .bind(&encrypted_payload).bind(&encrypted_nonce).bind(&encryption_header)
-    .bind(req.expires_at)
+    .bind(req.expires_at).bind(&access_type)
     .execute(&self.db).await?;
 
         audit::log(
@@ -1377,9 +1379,13 @@ impl FileService {
         Ok(share_id)
     }
 
-    pub async fn get_share(&self, share_id: Uuid) -> Result<GetShareResponse, AppError> {
+    pub async fn get_share(
+        &self,
+        share_id: Uuid,
+        is_authenticated: bool,
+    ) -> Result<GetShareResponse, AppError> {
         let row = sqlx::query(
-            "SELECT share_id, item_id, item_type, encrypted_payload, encrypted_nonce, encryption_header 
+            "SELECT share_id, item_id, item_type, encrypted_payload, encrypted_nonce, encryption_header, access_type 
              FROM item_shares 
              WHERE share_id = $1 
                AND revoked_at IS NULL
@@ -1390,6 +1396,12 @@ impl FileService {
         .await?;
 
         let row = row.ok_or(AppError::NotFound)?;
+
+        let access_type: String = row.try_get("access_type")?;
+
+        if access_type == "restricted" && !is_authenticated {
+            return Err(AppError::Unauthorized);
+        }
 
         let item_type: String = row.try_get("item_type")?;
         let item_id: Uuid = row.try_get("item_id")?;
@@ -1431,6 +1443,7 @@ impl FileService {
             encryption_header: encryption_header.map(|h| crypto::encode_b64(&h)),
             chunks,
             total_size,
+            access_type,
         })
     }
 
@@ -1438,6 +1451,7 @@ impl FileService {
         &self,
         share_id: Uuid,
         file_id: Uuid,
+        is_authenticated: bool,
     ) -> Result<Uuid, AppError> {
         let share: Option<(Uuid, String)> = sqlx::query_as(
             "SELECT item_id, item_type FROM item_shares 
@@ -1449,6 +1463,16 @@ impl FileService {
         .await?;
 
         let (shared_item_id, item_type) = share.ok_or(AppError::NotFound)?;
+
+        let access_type: String =
+            sqlx::query_scalar("SELECT access_type FROM item_shares WHERE share_id = $1")
+                .bind(share_id)
+                .fetch_one(&self.db)
+                .await?;
+
+        if access_type == "restricted" && !is_authenticated {
+            return Err(AppError::Unauthorized);
+        }
 
         if item_type == "file" {
             if shared_item_id != file_id {
@@ -1498,8 +1522,10 @@ impl FileService {
         &self,
         share_id: Uuid,
         file_id: Uuid,
+        is_authenticated: bool,
     ) -> Result<DownloadManifestResponse, AppError> {
-        self.verify_file_in_shared_folder(share_id, file_id).await?;
+        self.verify_file_in_shared_folder(share_id, file_id, is_authenticated)
+            .await?;
 
         let version_id: Uuid =
             sqlx::query_scalar("SELECT current_version_id FROM files WHERE file_id = $1")
@@ -1566,8 +1592,9 @@ impl FileService {
             chrono::DateTime<chrono::Utc>,
             Option<chrono::DateTime<chrono::Utc>>,
             Option<chrono::DateTime<chrono::Utc>>,
+            String,
         )> = sqlx::query_as(
-            "SELECT share_id, item_id, item_type, created_at, expires_at, revoked_at 
+            "SELECT share_id, item_id, item_type, created_at, expires_at, revoked_at, access_type
              FROM item_shares 
              WHERE owner_user_id = $1 
              ORDER BY created_at DESC",
@@ -1579,13 +1606,14 @@ impl FileService {
         Ok(rows
             .into_iter()
             .map(
-                |(sid, iid, itype, created, expires, revoked)| ShareListItem {
+                |(sid, iid, itype, created, expires, revoked, access)| ShareListItem {
                     share_id: sid,
                     item_id: iid,
                     item_type: itype,
                     created_at: created,
                     expires_at: expires,
                     revoked_at: revoked,
+                    access_type: access,
                 },
             )
             .collect())

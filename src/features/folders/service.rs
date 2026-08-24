@@ -336,4 +336,84 @@ impl FolderService {
         tx.commit().await?;
         Ok(results)
     }
+
+    pub async fn get_folder_file_tree(
+        &self,
+        user_id: Uuid,
+        folder_id: Uuid,
+    ) -> Result<Vec<crate::features::folders::dto::FlatTreeNode>, AppError> {
+        self.verify_folder_ownership(folder_id, user_id).await?;
+
+        let rows: Vec<(
+            Uuid,
+            Option<Uuid>,
+            String,
+            Vec<u8>,
+            Vec<u8>,
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+            Option<i64>,
+        )> = sqlx::query_as(
+            r#"
+            WITH RECURSIVE folder_tree AS (
+                SELECT folder_id, parent_folder_id, encrypted_metadata, metadata_nonce
+                FROM folders 
+                WHERE folder_id = $1 AND user_id = $2 AND deleted_at IS NULL
+                
+                UNION ALL
+                
+                SELECT f.folder_id, f.parent_folder_id, f.encrypted_metadata, f.metadata_nonce
+                FROM folders f
+                JOIN folder_tree ft ON f.parent_folder_id = ft.folder_id
+                WHERE f.deleted_at IS NULL
+            )
+            SELECT folder_id as id, 
+                   CASE WHEN folder_id = $1 THEN NULL ELSE parent_folder_id END as parent_id, 
+                   'folder' as node_type, 
+                   encrypted_metadata, 
+                   metadata_nonce, 
+                   NULL::bytea as wrapped_file_key, 
+                   NULL::bytea as wrapped_file_key_nonce, 
+                   NULL::bigint as total_size
+            FROM folder_tree
+            
+            UNION ALL
+            
+            SELECT f.file_id as id, 
+                   f.folder_id as parent_id, 
+                   'file' as node_type, 
+                   f.encrypted_metadata, 
+                   f.metadata_nonce, 
+                   v.wrapped_file_key, 
+                   v.wrapped_file_key_nonce, 
+                   f.total_size
+            FROM files f
+            JOIN file_versions v ON f.current_version_id = v.version_id
+            WHERE f.folder_id IN (SELECT folder_id FROM folder_tree) AND f.deleted_at IS NULL
+            "#,
+        )
+        .bind(folder_id)
+        .bind(user_id)
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, parent_id, node_type, meta, nonce, key, key_nonce, size)| {
+                    crate::features::folders::dto::FlatTreeNode {
+                        id,
+                        parent_id,
+                        node_type,
+                        encrypted_metadata: crate::core::crypto::encode_b64(&meta),
+                        metadata_nonce: crate::core::crypto::encode_b64(&nonce),
+                        wrapped_file_key: key.map(|k| crate::core::crypto::encode_b64(&k)),
+                        wrapped_file_key_nonce: key_nonce
+                            .map(|k| crate::core::crypto::encode_b64(&k)),
+                        total_size: size,
+                    }
+                },
+            )
+            .collect())
+    }
 }

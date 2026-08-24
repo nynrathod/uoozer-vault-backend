@@ -20,4 +20,8 @@ pub fn router() -> Router<AppState> {
                 .delete(handlers::delete_folder),
         )
         .route("/folders/{folder_id}/shares", post(create_share))
+        .route(
+            "/folders/{folder_id}/tree",
+            get(handlers::get_folder_file_tree),
+        )
 }
