@@ -25,3 +25,7 @@ ALTER TABLE item_shares ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_item_shares_owner ON item_shares (owner_user_id) WHERE revoked_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_item_shares_item ON item_shares (item_id, item_type);
 CREATE INDEX IF NOT EXISTS idx_item_shares_expires ON item_shares (expires_at);
+
+
+-- Add access_type to item_shares for public/restricted permissions
+ALTER TABLE item_shares ADD COLUMN IF NOT EXISTS access_type TEXT NOT NULL DEFAULT 'public';
