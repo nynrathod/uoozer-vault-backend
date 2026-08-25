@@ -339,3 +339,12 @@ pub async fn delete_version(
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+pub async fn empty_trash(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FileService::new(&state);
+    let count = svc.empty_trash(user.user_id).await?;
+    Ok(Json(serde_json::json!({ "deleted": count })))
+}

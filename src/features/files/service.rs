@@ -978,26 +978,12 @@ impl FileService {
             }
         } else {
             if !req.file_ids.is_empty() {
-                sqlx::query("UPDATE files SET deleted_at = now(), updated_at = now() WHERE file_id = ANY($1) AND user_id = $2")
+                sqlx::query("UPDATE files SET deleted_at = now(), updated_at = now() WHERE file_id = ANY($1) AND user_id = $2 AND deleted_at IS NULL")
                     .bind(&req.file_ids).bind(user_id).execute(&mut *tx).await?;
             }
 
             if !req.folder_ids.is_empty() {
-                let all_folder_ids =
-                    FolderService::get_descendant_folder_ids(&mut *tx, &req.folder_ids, user_id)
-                        .await?;
-
-                let files_in_folders: Vec<Uuid> = sqlx::query_scalar(
-                    "SELECT file_id FROM files WHERE folder_id = ANY($1) AND user_id = $2 AND deleted_at IS NULL",
-                )
-                .bind(&all_folder_ids).bind(user_id).fetch_all(&mut *tx).await?;
-
-                if !files_in_folders.is_empty() {
-                    sqlx::query("UPDATE files SET deleted_at = now(), updated_at = now() WHERE file_id = ANY($1) AND user_id = $2")
-                        .bind(&files_in_folders).bind(user_id).execute(&mut *tx).await?;
-                }
-
-                FolderService::soft_delete_many(&mut *tx, &all_folder_ids, user_id).await?;
+                FolderService::soft_delete_many(&mut *tx, &req.folder_ids, user_id).await?;
             }
         }
 
@@ -1737,5 +1723,98 @@ impl FileService {
         self.storage.delete_objects_best_effort(&r2_keys).await;
 
         Ok(())
+    }
+
+    pub async fn empty_trash(&self, user_id: Uuid) -> Result<usize, AppError> {
+        let mut tx = self.db.begin().await?;
+        let mut r2_keys = Vec::new();
+        let mut count = 0usize;
+
+        let trashed_files: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT file_id FROM files WHERE user_id = $1 AND deleted_at IS NOT NULL",
+        )
+        .bind(user_id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        if !trashed_files.is_empty() {
+            let chunk_keys: Vec<String> = sqlx::query_scalar(
+                "SELECT c.r2_key FROM file_chunks c 
+                 JOIN file_versions v ON c.version_id = v.version_id 
+                 JOIN files f ON v.file_id = f.file_id
+                 WHERE f.file_id = ANY($1) AND f.user_id = $2",
+            )
+            .bind(&trashed_files)
+            .bind(user_id)
+            .fetch_all(&mut *tx)
+            .await?;
+            r2_keys.extend(chunk_keys);
+
+            sqlx::query("DELETE FROM files WHERE file_id = ANY($1) AND user_id = $2")
+                .bind(&trashed_files)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+            count += trashed_files.len();
+        }
+
+        let trashed_folders: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT folder_id FROM folders WHERE user_id = $1 AND deleted_at IS NOT NULL",
+        )
+        .bind(user_id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        if !trashed_folders.is_empty() {
+            let all_folder_ids: Vec<Uuid> = sqlx::query_scalar(
+                r#"
+                WITH RECURSIVE descendants AS (
+                    SELECT folder_id FROM folders WHERE folder_id = ANY($1) AND user_id = $2
+                    UNION ALL
+                    SELECT f.folder_id FROM folders f
+                    INNER JOIN descendants d ON f.parent_folder_id = d.folder_id
+                    WHERE f.user_id = $2
+                )
+                SELECT folder_id FROM descendants
+                "#,
+            )
+            .bind(&trashed_folders)
+            .bind(user_id)
+            .fetch_all(&mut *tx)
+            .await?;
+
+            let chunk_keys: Vec<String> = sqlx::query_scalar(
+                "SELECT c.r2_key FROM file_chunks c 
+                 JOIN file_versions v ON c.version_id = v.version_id 
+                 JOIN files f ON v.file_id = f.file_id
+                 WHERE f.folder_id = ANY($1) AND f.user_id = $2",
+            )
+            .bind(&all_folder_ids)
+            .bind(user_id)
+            .fetch_all(&mut *tx)
+            .await?;
+            r2_keys.extend(chunk_keys);
+
+            sqlx::query("DELETE FROM files WHERE folder_id = ANY($1) AND user_id = $2")
+                .bind(&all_folder_ids)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+
+            sqlx::query("DELETE FROM folders WHERE folder_id = ANY($1) AND user_id = $2")
+                .bind(&all_folder_ids)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+            count += trashed_folders.len();
+        }
+
+        tx.commit().await?;
+
+        if !r2_keys.is_empty() {
+            self.storage.delete_objects_best_effort(&r2_keys).await;
+        }
+
+        Ok(count)
     }
 }

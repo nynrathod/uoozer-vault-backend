@@ -195,19 +195,13 @@ impl FolderService {
 
         let mut tx = self.db.begin().await?;
 
-        let all_folder_ids =
-            Self::get_descendant_folder_ids(&mut *tx, &[folder_id], user_id).await?;
-
         sqlx::query(
-            "UPDATE files SET deleted_at = now(), updated_at = now() 
-             WHERE folder_id = ANY($1) AND user_id = $2 AND deleted_at IS NULL",
-        )
-        .bind(&all_folder_ids)
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await?;
-
-        Self::soft_delete_many(&mut *tx, &all_folder_ids, user_id).await?;
+        "UPDATE folders SET deleted_at = now() WHERE folder_id = $1 AND user_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(folder_id)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
 
         state.broadcast_sync(
             user_id,
@@ -354,12 +348,12 @@ impl FolderService {
         }
 
         sqlx::query(
-            "UPDATE folders SET deleted_at = now() WHERE folder_id = ANY($1) AND user_id = $2",
-        )
-        .bind(folder_ids)
-        .bind(user_id)
-        .execute(executor)
-        .await?;
+        "UPDATE folders SET deleted_at = now() WHERE folder_id = ANY($1) AND user_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(folder_ids)
+    .bind(user_id)
+    .execute(executor)
+    .await?;
 
         Ok(())
     }
@@ -499,41 +493,13 @@ impl FolderService {
         folder_id: Uuid,
         state: &AppState,
     ) -> Result<(), AppError> {
-        let mut tx = self.db.begin().await?;
-
-        let all_folder_ids: Vec<Uuid> = sqlx::query_scalar(
-            r#"
-            WITH RECURSIVE descendants AS (
-                SELECT folder_id FROM folders WHERE folder_id = $1 AND user_id = $2
-                UNION ALL
-                SELECT f.folder_id FROM folders f
-                INNER JOIN descendants d ON f.parent_folder_id = d.folder_id
-                WHERE f.user_id = $2
-            )
-            SELECT folder_id FROM descendants
-            "#,
+        sqlx::query(
+            "UPDATE folders SET deleted_at = NULL, updated_at = now() 
+         WHERE folder_id = $1 AND user_id = $2 AND deleted_at IS NOT NULL",
         )
         .bind(folder_id)
         .bind(user_id)
-        .fetch_all(&mut *tx)
-        .await?;
-
-        sqlx::query(
-            "UPDATE files SET deleted_at = NULL, updated_at = now() 
-             WHERE folder_id = ANY($1) AND user_id = $2 AND deleted_at IS NOT NULL",
-        )
-        .bind(&all_folder_ids)
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await?;
-
-        sqlx::query(
-            "UPDATE folders SET deleted_at = NULL, updated_at = now() 
-             WHERE folder_id = ANY($1) AND user_id = $2 AND deleted_at IS NOT NULL",
-        )
-        .bind(&all_folder_ids)
-        .bind(user_id)
-        .execute(&mut *tx)
+        .execute(&self.db)
         .await?;
 
         state.broadcast_sync(
@@ -547,7 +513,6 @@ impl FolderService {
             },
         );
 
-        tx.commit().await?;
         Ok(())
     }
 }

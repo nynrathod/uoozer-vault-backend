@@ -41,6 +41,7 @@ pub fn router() -> Router<AppState> {
                 .patch(handlers::update_file)
                 .delete(handlers::delete_file),
         )
+        .route("/files/empty-trash", post(handlers::empty_trash))
         .route("/files/bulk-delete", post(handlers::bulk_delete))
         .route("/files/{file_id}/restore", post(handlers::restore_file))
         .route(
