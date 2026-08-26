@@ -87,13 +87,47 @@ impl FileService {
         .await?;
 
         if let Some((existing_file_id, existing_version_id)) = existing {
-            tracing::info!(user_id = %user_id, file_id = %existing_file_id, "dedup hit — skipping upload");
-            return Ok(CreateFileResponse {
-                file_id: existing_file_id,
-                version_id: existing_version_id,
-                deduplicated: true,
-                upload_urls: vec![],
-            });
+            if self.storage.is_configured() {
+                let first_chunk_key: Option<String> = sqlx::query_scalar(
+                    "SELECT r2_key FROM file_chunks WHERE version_id = $1 LIMIT 1",
+                )
+                .bind(existing_version_id)
+                .fetch_optional(&self.db)
+                .await?;
+
+                if let Some(key) = first_chunk_key {
+                    let head = self.storage.head_object(&key).await?;
+                    if head.is_none() {
+                        tracing::warn!(file_id = %existing_file_id, "Ghost dedup detected. Deleting orphaned file record.");
+                        sqlx::query("DELETE FROM files WHERE file_id = $1")
+                            .bind(existing_file_id)
+                            .execute(&self.db)
+                            .await?;
+                    } else {
+                        tracing::info!(user_id = %user_id, file_id = %existing_file_id, "dedup hit — skipping upload");
+                        return Ok(CreateFileResponse {
+                            file_id: existing_file_id,
+                            version_id: existing_version_id,
+                            deduplicated: true,
+                            upload_urls: vec![],
+                        });
+                    }
+                } else {
+                    return Ok(CreateFileResponse {
+                        file_id: existing_file_id,
+                        version_id: existing_version_id,
+                        deduplicated: true,
+                        upload_urls: vec![],
+                    });
+                }
+            } else {
+                return Ok(CreateFileResponse {
+                    file_id: existing_file_id,
+                    version_id: existing_version_id,
+                    deduplicated: true,
+                    upload_urls: vec![],
+                });
+            }
         }
 
         if !self.storage.is_configured() {
@@ -318,7 +352,7 @@ impl FileService {
                     v.wrapped_file_key, v.wrapped_file_key_nonce, v.encryption_header
              FROM files f
              LEFT JOIN file_versions v ON f.current_version_id = v.version_id
-             WHERE f.file_id = $1 AND f.user_id = $2 AND f.deleted_at IS NULL",
+                          WHERE f.file_id = $1 AND f.user_id = $2",
         )
         .bind(file_id).bind(user_id).fetch_optional(&self.db).await?;
 
@@ -471,9 +505,12 @@ impl FileService {
         version_id: Option<Uuid>,
     ) -> Result<DownloadManifestResponse, AppError> {
         let file: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
-            "SELECT file_id, current_version_id FROM files WHERE file_id = $1 AND user_id = $2 AND deleted_at IS NULL",
+            "SELECT file_id, current_version_id FROM files WHERE file_id = $1 AND user_id = $2",
         )
-        .bind(file_id).bind(user_id).fetch_optional(&self.db).await?;
+        .bind(file_id)
+        .bind(user_id)
+        .fetch_optional(&self.db)
+        .await?;
 
         let (_, current_version_id) = file.ok_or(AppError::NotFound)?;
 
