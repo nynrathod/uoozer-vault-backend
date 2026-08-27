@@ -56,7 +56,7 @@ impl FileService {
         .fetch_one(&self.db)
         .await?;
 
-        const USER_STORAGE_QUOTA_BYTES: i64 = 100 * 1024 * 1024;
+        const USER_STORAGE_QUOTA_BYTES: i64 = 10 * 1024 * 1024 * 1024;
         if current_usage + req.total_size > USER_STORAGE_QUOTA_BYTES {
             return Err(AppError::BadRequest(format!(
                 "storage quota exceeded. limit: {} bytes, used: {} bytes",
@@ -231,7 +231,7 @@ impl FileService {
         )
         .bind(user_id).fetch_one(&self.db).await?;
 
-        const USER_STORAGE_QUOTA_BYTES: i64 = 100 * 1024 * 1024;
+        const USER_STORAGE_QUOTA_BYTES: i64 = 10 * 1024 * 1024 * 1024;
         if current_usage + req.total_size > USER_STORAGE_QUOTA_BYTES {
             return Err(AppError::BadRequest(format!(
                 "storage quota exceeded. limit: {} bytes, used: {} bytes",
@@ -1063,7 +1063,7 @@ impl FileService {
     .fetch_one(&self.db)
     .await?;
 
-        const USER_STORAGE_QUOTA_BYTES: i64 = 100 * 1024 * 1024;
+        const USER_STORAGE_QUOTA_BYTES: i64 = 10 * 1024 * 1024 * 1024;
         if current_usage + total_size > USER_STORAGE_QUOTA_BYTES {
             return Err(AppError::BadRequest("storage quota exceeded".into()));
         }
@@ -1259,7 +1259,7 @@ impl FileService {
         .fetch_one(&self.db)
         .await?;
 
-        const USER_STORAGE_QUOTA_BYTES: i64 = 100 * 1024 * 1024;
+        const USER_STORAGE_QUOTA_BYTES: i64 = 10 * 1024 * 1024 * 1024;
         if current_usage + total_bulk_size > USER_STORAGE_QUOTA_BYTES {
             return Err(AppError::BadRequest(format!(
                 "storage quota exceeded. limit: {} bytes, used: {} bytes",
