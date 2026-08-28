@@ -110,6 +110,23 @@ pub struct JwtKeyPair {
     decoding: DecodingKey,
 }
 
+#[derive(Clone)]
+pub struct SecretBox<T: Zeroize + Clone> {
+    inner: Arc<T>,
+}
+
+impl<T: Zeroize + Clone> SecretBox<T> {
+    pub fn new(val: T) -> Self {
+        Self {
+            inner: Arc::new(val),
+        }
+    }
+
+    pub fn as_ref(&self) -> &T {
+        &self.inner
+    }
+}
+
 impl JwtKeyPair {
     pub fn from_pem(pem: &str) -> Result<Self, AppError> {
         // Parse the PEM using ed25519-dalek instead of jsonwebtoken
@@ -269,25 +286,4 @@ pub fn decode_b64(s: &str) -> Result<Vec<u8>, AppError> {
 
 pub fn encode_b64(data: &[u8]) -> String {
     B64.encode(data)
-}
-
-// ──────────────────────────────────────────────────────────────
-// Zeroization wrapper for sensitive data
-// ──────────────────────────────────────────────────────────────
-
-#[derive(Clone)]
-pub struct SecretBox<T: Zeroize + Clone> {
-    inner: Arc<T>,
-}
-
-impl<T: Zeroize + Clone> SecretBox<T> {
-    pub fn new(val: T) -> Self {
-        Self {
-            inner: Arc::new(val),
-        }
-    }
-
-    pub fn as_ref(&self) -> &T {
-        &self.inner
-    }
 }
