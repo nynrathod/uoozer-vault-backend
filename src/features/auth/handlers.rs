@@ -137,37 +137,51 @@ pub async fn upload_avatar(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     mut multipart: Multipart,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     while let Some(field) = multipart
         .next_field()
         .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?
+        .map_err(|e| AppError::BadRequest(format!("multipart error: {e}")))?
     {
-        if field.name() == Some("file") {
-            let data = field
-                .bytes()
-                .await
-                .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        if field.name() != Some("file") {
+            continue;
+        }
 
-            if let Some(r2) = &state.r2 {
-                let key = format!("avatars/{}", user.user_id);
+        let content_type = field.content_type().unwrap_or("").to_string();
+        if !["image/png", "image/jpeg", "image/webp", "image/gif"].contains(&content_type.as_str())
+        {
+            return Err(AppError::Validation(
+                "avatar must be a PNG/JPEG/WebP/GIF".into(),
+            ));
+        }
 
-                r2.upload_object(&key, data.to_vec()).await?;
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| AppError::BadRequest(format!("read failed: {e}")))?;
 
-                let url = r2.presign_get(&key).await?;
+        if data.len() > 2 * 1024 * 1024 {
+            return Err(AppError::Validation("avatar must be under 2 MB".into()));
+        }
 
-                let svc = AuthService::new(&state);
-                svc.update_avatar_url(user.user_id, url.clone()).await?;
+        if let Some(r2) = &state.r2 {
+            let key = format!("avatars/{}", user.user_id);
 
-                return Ok(Json(serde_json::json!({ "avatar_url": url })));
-            } else {
-                return Err(AppError::ServiceUnavailable(
-                    "Storage not configured".into(),
-                ));
-            }
+            r2.upload_object(&key, data.to_vec()).await?;
+
+            let url = r2.presign_get(&key).await?;
+
+            let svc = AuthService::new(&state);
+            svc.update_avatar_url(user.user_id, url.clone()).await?;
+
+            return Ok(Json(serde_json::json!({ "avatar_url": url })));
+        } else {
+            return Err(AppError::ServiceUnavailable(
+                "Storage not configured".into(),
+            ));
         }
     }
-    Err(AppError::BadRequest("No file uploaded".into()))
+    Err(AppError::BadRequest("no 'file' field uploaded".into()))
 }
 
 pub async fn delete_avatar(

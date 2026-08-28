@@ -341,23 +341,23 @@ impl FileService {
         })
     }
 
-    pub async fn get_file(&self, user_id: Uuid, file_id: Uuid) -> Result<FileResponse, AppError> {
-        let file = sqlx::query_as::<_, FileResponse>(
-            "SELECT f.file_id, f.folder_id, f.encrypted_metadata, f.metadata_nonce,
-                    f.total_size, f.current_version_id, f.deleted_at,
-                    (f.current_version_id IS NOT NULL AND NOT COALESCE(
-                        (SELECT v.is_active FROM file_versions v WHERE v.version_id = f.current_version_id), false
-                    )) AS is_uploading,
-                    f.created_at, f.updated_at,
-                    v.wrapped_file_key, v.wrapped_file_key_nonce, v.encryption_header
-             FROM files f
-             LEFT JOIN file_versions v ON f.current_version_id = v.version_id
-                          WHERE f.file_id = $1 AND f.user_id = $2",
-        )
-        .bind(file_id).bind(user_id).fetch_optional(&self.db).await?;
+pub async fn get_file(&self, user_id: Uuid, file_id: Uuid) -> Result<FileResponse, AppError> {
+    let file = sqlx::query_as::<_, FileResponse>(
+        "SELECT f.file_id, f.folder_id, f.encrypted_metadata, f.metadata_nonce,
+                f.total_size, f.current_version_id, f.deleted_at,
+                (f.current_version_id IS NOT NULL AND NOT COALESCE(
+                    (SELECT v.is_active FROM file_versions v WHERE v.version_id = f.current_version_id), false
+                )) AS is_uploading,
+                f.created_at, f.updated_at,
+                v.wrapped_file_key, v.wrapped_file_key_nonce, v.encryption_header
+         FROM files f
+         LEFT JOIN file_versions v ON f.current_version_id = v.version_id
+         WHERE f.file_id = $1 AND f.user_id = $2 AND f.deleted_at IS NULL",
+    )
+    .bind(file_id).bind(user_id).fetch_optional(&self.db).await?;
 
-        file.ok_or(AppError::NotFound)
-    }
+    file.ok_or(AppError::NotFound)
+}
 
     pub async fn list_files(
         &self,
@@ -504,33 +504,35 @@ impl FileService {
         file_id: Uuid,
         version_id: Option<Uuid>,
     ) -> Result<DownloadManifestResponse, AppError> {
-        let file: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
-            "SELECT file_id, current_version_id FROM files WHERE file_id = $1 AND user_id = $2",
-        )
-        .bind(file_id)
-        .bind(user_id)
-        .fetch_optional(&self.db)
-        .await?;
+       let file: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
+        "SELECT file_id, current_version_id FROM files 
+         WHERE file_id = $1 AND user_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(file_id)
+    .bind(user_id)
+    .fetch_optional(&self.db)
+    .await?;
+         let (_, current_version_id) = file.ok_or(AppError::NotFound)?;
 
-        let (_, current_version_id) = file.ok_or(AppError::NotFound)?;
-
-        let target_version_id =
-            match version_id {
-                Some(vid) => {
-                    let exists: Option<(Uuid,)> = sqlx::query_as(
-                    "SELECT v.version_id FROM file_versions v JOIN files f ON f.file_id = v.file_id
-                     WHERE v.version_id = $1 AND f.user_id = $2 AND f.deleted_at IS NULL",
-                )
-                .bind(vid).bind(user_id).fetch_optional(&self.db).await?;
-                    if exists.is_none() {
-                        return Err(AppError::NotFound);
-                    }
-                    vid
-                }
-                None => current_version_id.ok_or(AppError::BadRequest(
-                    "file upload is not complete — no active version".into(),
-                ))?,
-            };
+    let target_version_id = match version_id {
+        Some(vid) => {
+            let exists: Option<(Uuid,)> = sqlx::query_as(
+                "SELECT v.version_id FROM file_versions v JOIN files f ON f.file_id = v.file_id
+                 WHERE v.version_id = $1 AND f.user_id = $2 AND f.deleted_at IS NULL",
+            )
+            .bind(vid)
+            .bind(user_id)
+            .fetch_optional(&self.db)
+            .await?;
+            if exists.is_none() {
+                return Err(AppError::NotFound);
+            }
+            vid
+        }
+        None => current_version_id.ok_or(AppError::BadRequest(
+            "file upload is not complete — no active version".into(),
+        ))?,
+    };
 
         if !self.storage.is_configured() {
             return Err(AppError::ServiceUnavailable(
@@ -830,9 +832,17 @@ impl FileService {
 
         if unuploaded_count > 0 {
             let missing: Vec<i32> = sqlx::query_scalar(
-                "SELECT chunk_index FROM file_chunks WHERE version_id = $1 AND uploaded_at IS NULL ORDER BY chunk_index"
+        "SELECT chunk_index FROM file_chunks WHERE version_id = $1 AND uploaded_at IS NULL ORDER BY chunk_index"
+    ).bind(req.version_id).fetch_all(&mut *tx).await?;
+
+            audit::log(
+                &mut *tx,
+                Some(user_id),
+                Some(device_id),
+                "file_upload_partial",
+                &serde_json::json!({ "version_id": req.version_id, "missing_chunks": missing }),
             )
-            .bind(req.version_id).fetch_all(&mut *tx).await?;
+            .await?;
 
             tx.commit().await?;
 
@@ -1088,7 +1098,6 @@ impl FileService {
         }))
     }
 
-    /// Cleans up orphaned chunks and DB records when an upload is cancelled.
     pub async fn cancel_upload(
         &self,
         user_id: Uuid,
@@ -1103,15 +1112,27 @@ impl FileService {
                 .fetch_all(&mut *tx)
                 .await?;
 
-        sqlx::query("DELETE FROM file_chunks WHERE version_id = $1")
-            .bind(version_id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "DELETE FROM file_chunks c
+         WHERE c.version_id = $1
+           AND EXISTS (SELECT 1 FROM file_versions v
+                       JOIN files f ON f.file_id = v.file_id
+                       WHERE v.version_id = c.version_id AND f.user_id = $2)",
+        )
+        .bind(version_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
 
-        sqlx::query("DELETE FROM file_versions WHERE version_id = $1 AND is_active = false")
-            .bind(version_id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "DELETE FROM file_versions v
+         WHERE v.version_id = $1 AND v.is_active = false
+           AND EXISTS (SELECT 1 FROM files f WHERE f.file_id = v.file_id AND f.user_id = $2)",
+        )
+        .bind(version_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
 
         sqlx::query(
             "DELETE FROM files WHERE file_id = $1 AND user_id = $2 AND current_version_id = $3",
@@ -1151,48 +1172,11 @@ impl FileService {
         &self,
         older_than_hours: i64,
     ) -> Result<usize, AppError> {
-        let cutoff = Utc::now() - chrono::Duration::hours(older_than_hours);
-
-        let r2_keys: Vec<String> = sqlx::query_scalar(
-            r#"
-        SELECT c.r2_key
-        FROM file_chunks c
-        JOIN file_versions v ON c.version_id = v.version_id
-        WHERE v.is_active = false
-          AND v.created_at < $1
-          AND NOT EXISTS (
-            SELECT 1 FROM files f WHERE f.current_version_id = v.version_id
-          )
-        "#,
-        )
-        .bind(cutoff)
-        .fetch_all(&self.db)
-        .await?;
-
-        let key_count = r2_keys.len();
-        self.storage.delete_objects_best_effort(&r2_keys).await;
-
-        let result = sqlx::query(
-            r#"
-        DELETE FROM file_versions
-        WHERE is_active = false
-          AND created_at < $1
-          AND NOT EXISTS (
-            SELECT 1 FROM files f WHERE f.current_version_id = file_versions.version_id
-          )
-        "#,
-        )
-        .bind(cutoff)
-        .execute(&self.db)
-        .await?;
-
-        tracing::info!(
-            deleted_versions = result.rows_affected(),
-            deleted_r2_objects = key_count,
-            "orphaned upload cleanup completed"
-        );
-
-        Ok(result.rows_affected() as usize)
+        use crate::features::files::cleanup::CleanupService;
+        let svc = CleanupService::new(self.db.clone(), self.storage.clone());
+        svc.cleanup_orphaned_versions(older_than_hours)
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))
     }
 
     pub async fn verify_download_completeness(
@@ -1495,6 +1479,18 @@ impl FileService {
         let item_id: Uuid = row.try_get("item_id")?;
         let encrypted_payload: Vec<u8> = row.try_get("encrypted_payload")?;
         let encrypted_nonce: Vec<u8> = row.try_get("encrypted_nonce")?;
+
+        let _ = sqlx::query(
+            "INSERT INTO audit_logs (event_type, event_metadata)
+         VALUES ('share_accessed', $1)",
+        )
+        .bind(serde_json::json!({
+            "share_id": share_id.to_string(),
+            "authenticated": is_authenticated,
+            "item_type": item_type,
+        }))
+        .execute(&self.db)
+        .await;
 
         let (chunks, total_size, encryption_header) = if item_type == "file" {
             let version_id: Uuid =

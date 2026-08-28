@@ -36,8 +36,14 @@ pub async fn list_for_user(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<sqlx::types::Json<serde_json::Value>>, Error> {
+    let limit = limit.clamp(1, 500);
+    let offset = offset.max(0);
+
     sqlx::query_scalar(
-        "SELECT event_metadata FROM audit_logs WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+        "SELECT event_metadata FROM audit_logs
+         WHERE user_id = $1
+         ORDER BY created_at DESC
+         LIMIT $2 OFFSET $3",
     )
     .bind(user_id)
     .bind(limit)

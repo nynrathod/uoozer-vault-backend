@@ -75,7 +75,7 @@ async fn file_at_10gb_limit_rejected_by_quota() {
     let (server, _pool, _guard) = setup_app().await;
     let (access, _, _, _) = common::signup_full(&server, "a4_10gb@example.com").await;
 
-    let size = 10 * 1024 * 1024 * 1024; // 10GB
+    let size = 11_i64 * 1024 * 1024 * 1024;
     let req = factory::create_file_req_with_size(None, size, 2500);
 
     let resp = server
@@ -124,9 +124,9 @@ async fn file_exceeding_10gb_rejected() {
 #[tokio::test]
 async fn precheck_quota_exceeded() {
     let (server, _pool, _guard) = setup_app().await;
-    let (access, _, _, _) = common::signup_full(&server, "a6_quota@example.com").await;
+    let (access, _, _, _) = common::signup_full(&server, "case6@example.com").await;
 
-    let oversized_total_size = 101 * 1024 * 1024;
+    let oversized_total_size = 11_i64 * 1024 * 1024 * 1024;
 
     let base_url = server.url(&format!("{API}/files/precheck"));
     let url = reqwest::Url::parse_with_params(
@@ -154,6 +154,26 @@ async fn precheck_quota_exceeded() {
             .unwrap()
             .contains("quota exceeded")
     );
+}
+
+#[tokio::test]
+async fn file_at_10gb_limit_returns_503_without_r2() {
+    let (server, _pool, _guard) = setup_app().await;
+    let (access, _, _, _) = common::signup_full(&server, "a4_10gb@example.com").await;
+
+    let size = 10 * 1024 * 1024 * 1024;
+    let req = factory::create_file_req_with_size(None, size, 2500);
+
+    let resp = server
+        .client
+        .post(server.url(&format!("{API}/files")))
+        .header("authorization", format!("Bearer {access}"))
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::SERVICE_UNAVAILABLE);
 }
 
 // ── Unicode filename ───────────────────────────────────
@@ -613,8 +633,9 @@ async fn create_file_validation_exceeding_quota() {
     let (access, _, _, _) = common::signup_full(&server, "val_quota@example.com").await;
 
     let mut req = factory::create_file_req(None);
-    req["total_size"] = json!(200 * 1024 * 1024);
-    req["chunks"][0]["chunk_size"] = json!(200 * 1024 * 1024 + 17);
+    // Use 11GB to exceed the 10GB limit
+    req["total_size"] = json!(11_i64 * 1024 * 1024 * 1024);
+    req["chunks"][0]["chunk_size"] = json!(11_i64 * 1024 * 1024 * 1024 + 17);
 
     let resp = server
         .client

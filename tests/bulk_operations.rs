@@ -37,7 +37,7 @@ async fn bulk_init_quota_exceeded() {
     let (server, _pool, _guard) = setup_app().await;
     let (access, _, _, _) = common::signup_full(&server, "bulk_quota@example.com").await;
 
-    let file_req = factory::create_file_req_with_size(None, 50 * 1024 * 1024, 1);
+    let file_req = factory::create_file_req_with_size(None, 4 * 1024 * 1024 * 1024, 1);
     let req = json!({
         "files": [file_req, file_req.clone(), file_req.clone()]
     });

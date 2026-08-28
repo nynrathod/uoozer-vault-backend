@@ -8,8 +8,7 @@ async fn precheck_quota_exceeded() {
     let (server, _pool, _guard) = setup_app().await;
     let (access, _, _, _) = common::signup_full(&server, "case6@example.com").await;
 
-    // 101MB (exceeds 100MB POC limit)
-    let oversized_total_size = 101 * 1024 * 1024;
+    let oversized_total_size = 11_i64 * 1024 * 1024 * 1024;
 
     let base_url = server.url(&format!("{API}/files/precheck"));
     let url = reqwest::Url::parse_with_params(

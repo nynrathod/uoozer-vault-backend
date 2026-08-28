@@ -484,11 +484,9 @@ async fn create_file_rejects_chunk_size_mismatch() {
 async fn create_file_rejects_exceeding_quota() {
     let (server, _pool, _guard) = setup_app().await;
     let (access, _, _, _) = common::signup_full(&server, "malicious2@example.com").await;
-
-    // Claim total_size is 200MB (exceeds 100MB POC limit)
-    let mut req = factory::create_file_req(None);
-    req["total_size"] = json!(200 * 1024 * 1024);
-    req["chunks"][0]["chunk_size"] = json!(200 * 1024 * 1024 + 17); // Make math match
+let mut req = factory::create_file_req(None);
+    req["total_size"] = json!(11_i64 * 1024 * 1024 * 1024);
+    req["chunks"][0]["chunk_size"] = json!(11_i64 * 1024 * 1024 * 1024 + 17);
 
     let resp = server
         .client

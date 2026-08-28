@@ -412,8 +412,10 @@ impl AuthService {
         })
     }
 
-    pub async fn refresh(&self, refresh_token: &str) -> Result<AuthResponse, AppError> {
+       pub async fn refresh(&self, refresh_token: &str) -> Result<AuthResponse, AppError> {
         let claims = self.jwt_keys.verify_refresh_token(refresh_token)?;
+
+        let mut tx = self.db.begin().await?;
 
         let session: Option<(
             Uuid,
@@ -422,15 +424,16 @@ impl AuthService {
             String,
             Option<String>,
             Option<Uuid>,
-						String
+            String
        )> = sqlx::query_as(
             "SELECT s.session_id, s.user_id, s.device_id, s.refresh_token_hash, s.revoked_reason, s.rotated_to, u.full_name 
              FROM sessions s 
              JOIN users u ON s.user_id = u.user_id 
-             WHERE s.refresh_token_jti = $1"
+             WHERE s.refresh_token_jti = $1
+             FOR UPDATE OF s"
         )
         .bind(claims.jti)
-        .fetch_optional(&self.db)
+        .fetch_optional(&mut *tx)
         .await?;
 
         let session = match session {
@@ -442,10 +445,6 @@ impl AuthService {
             session;
 
         if revoked_reason.is_some() {
-            return Err(AppError::InvalidRefreshToken);
-        }
-
-        if session_id != claims.sid {
             return Err(AppError::InvalidRefreshToken);
         }
 
@@ -461,12 +460,12 @@ impl AuthService {
             )
             .bind(current_session_id)
             .bind(next_session_id)
-            .execute(&self.db)
+            .execute(&mut *tx)
             .await?;
 
             // 2. Log the security event to the audit table
             audit::log(
-                &self.db,
+                &mut *tx,
                 Some(claims.sub),
                 Some(claims.did),
                 "refresh_token_reuse",
@@ -474,6 +473,8 @@ impl AuthService {
             )
             .await
             .ok();
+
+            tx.commit().await?; 
 
             return Err(AppError::RefreshTokenReuse);
         }
@@ -499,8 +500,6 @@ impl AuthService {
         )?;
 
         let new_hash = crypto::hash_refresh_token(&new_refresh_token);
-
-        let mut tx = self.db.begin().await?;
 
         sqlx::query(
             "INSERT INTO sessions (session_id, user_id, device_id, refresh_token_hash, refresh_token_jti, expires_at) VALUES ($1, $2, $3, $4, $5, $6)"
@@ -654,19 +653,36 @@ impl AuthService {
         user_id: Uuid,
         req: super::dto::UpdateProfileRequest,
     ) -> Result<(), AppError> {
-        sqlx::query(
-            "UPDATE users 
-             SET full_name = COALESCE($1, full_name),
-                 avatar_url = COALESCE($2, avatar_url),
-                 updated_at = now()
-             WHERE user_id = $3",
+        if let Some(ref name) = req.full_name {
+            if name.trim().is_empty() || name.len() > 100 {
+                return Err(AppError::Validation("full_name must be 1–100 chars".into()));
+            }
+        }
+        if let Some(ref url) = req.avatar_url {
+            if url.len() > 2048 || !url.starts_with("https://") {
+                return Err(AppError::Validation(
+                    "avatar_url must be a valid HTTPS URL".into(),
+                ));
+            }
+        }
+
+        let affected = sqlx::query(
+            "UPDATE users
+         SET full_name = COALESCE($1, full_name),
+             avatar_url = COALESCE($2, avatar_url),
+             updated_at = now()
+         WHERE user_id = $3 AND disabled_at IS NULL",
         )
-        .bind(req.full_name)
-        .bind(req.avatar_url)
+        .bind(req.full_name.as_deref())
+        .bind(req.avatar_url.as_deref())
         .bind(user_id)
         .execute(&self.db)
-        .await?;
+        .await?
+        .rows_affected();
 
+        if affected == 0 {
+            return Err(AppError::NotFound);
+        }
         Ok(())
     }
 

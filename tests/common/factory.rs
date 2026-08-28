@@ -109,7 +109,9 @@ pub fn create_file_req(folder_id: Option<Uuid>) -> Value {
             "segment_index": 0,
             "chunk_size": 1024 + 17,
             "chunk_blake3": random_b64(32),
-        }]
+        }],
+				"wrapped_file_key": random_b64(32),
+        "wrapped_file_key_nonce": random_b64(24)
     })
 }
 
@@ -144,7 +146,9 @@ pub fn create_file_req_with_size(
         "total_size": total_size,
         "total_chunks": total_chunks,
         "encryption_header": random_b64(24),
-        "chunks": chunks
+        "chunks": chunks,
+        "wrapped_file_key": random_b64(32),
+        "wrapped_file_key_nonce": random_b64(24)
     })
 }
 
@@ -162,7 +166,9 @@ pub fn create_file_req_with_hash(folder_id: Option<Uuid>, plaintext_blake3: Stri
             "segment_index": 0,
             "chunk_size": 1024 + 17,
             "chunk_blake3": random_b64(32),
-        }]
+        }],
+        "wrapped_file_key": random_b64(32),
+        "wrapped_file_key_nonce": random_b64(24)
     })
 }
 
@@ -192,7 +198,9 @@ pub fn create_file_req_with_metadata(
         "total_size": total_size,
         "total_chunks": total_chunks,
         "encryption_header": random_b64(24),
-        "chunks": chunks
+        "chunks": chunks,
+        "wrapped_file_key": random_b64(32),
+        "wrapped_file_key_nonce": random_b64(24)
     })
 }
 

@@ -12,23 +12,28 @@ axum-extra = { version = "0.12", features = ["typed-header"] }
 tokio = { version = "1.53", features = ["full"] }
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
 tower-http = { version = "0.7", features = [
-    "cors", "trace", "compression-gzip",
-    "request-id", "util", "catch-panic", "sensitive-headers",
+	"cors",
+	"trace",
+	"compression-gzip",
+	"request-id",
+	"util",
+	"catch-panic",
+	"sensitive-headers",
 ] }
 hyper = "1.11"
 http = "1.4"
 
 # Database
 sqlx = { version = "0.9", default-features = false, features = [
-    "runtime-tokio",
-    "tls-rustls",
-    "postgres",
-    "uuid",
-    "chrono",
-    "json",
-    "macros",
-    "migrate",
-    "ipnetwork",
+	"runtime-tokio",
+	"tls-rustls",
+	"postgres",
+	"uuid",
+	"chrono",
+	"json",
+	"macros",
+	"migrate",
+	"ipnetwork",
 ] }
 
 # Serialization
@@ -41,7 +46,12 @@ anyhow = "1.0"
 
 # Observability
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt", "chrono"] }
+tracing-subscriber = { version = "0.3", features = [
+	"env-filter",
+	"json",
+	"fmt",
+	"chrono",
+] }
 
 # Crypto
 argon2 = "0.5"
@@ -57,7 +67,9 @@ hex = "0.4"
 ed25519-dalek = { version = "3.0", features = ["pkcs8", "pem", "rand_core"] }
 pkcs8 = { version = "0.11", features = ["std", "alloc"] }
 spki = { version = "0.7", features = ["pem"] }
-jsonwebtoken = { version = "10.4", default-features = false, features = ["rust_crypto"] }
+jsonwebtoken = { version = "10.4", default-features = false, features = [
+	"rust_crypto",
+] }
 # Object storage
 aws-config = { version = "1.10", features = ["behavior-version-latest"] }
 aws-sdk-s3 = "1.139"
@@ -85,8 +97,9 @@ async-stream = "0.3"
 # HTTP test client
 axum-test = "16"
 reqwest = { version = "0.13", default-features = false, features = [
-    "json",
-    "rustls",
+	"json",
+	"rustls",
+	"multipart",
 ] }
 tokio = { version = "1.53", features = ["full", "test-util"] }
 tower = { version = "0.5", features = ["util"] }

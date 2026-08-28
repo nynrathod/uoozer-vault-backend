@@ -166,22 +166,47 @@ impl DeviceService {
         device_id: Uuid,
         new_name: &str,
     ) -> Result<(), AppError> {
+        let mut tx = self.db.begin().await?;
+
         let affected = sqlx::query(
-            r#"
-            UPDATE devices SET device_name = $1, last_seen_at = now()
-            WHERE device_id = $2 AND user_id = $3 AND revoked_at IS NULL
-            "#,
+            "UPDATE devices SET device_name = $1, last_seen_at = now()
+         WHERE device_id = $2 AND user_id = $3 AND revoked_at IS NULL",
         )
         .bind(new_name)
         .bind(device_id)
         .bind(user_id)
-        .execute(&self.db)
+        .execute(&mut *tx)
         .await?
         .rows_affected();
 
         if affected == 0 {
-            return Err(AppError::NotFound);
+            let exists: Option<(Option<DateTime<Utc>>,)> = sqlx::query_as(
+                "SELECT revoked_at FROM devices WHERE device_id = $1 AND user_id = $2",
+            )
+            .bind(device_id)
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+            return Err(match exists {
+                None => AppError::NotFound,
+                Some((Some(_),)) => AppError::DeviceRevoked,
+                _ => {
+                    AppError::Internal(anyhow::anyhow!("update affected 0 rows but device exists"))
+                }
+            });
         }
+
+        audit::log(
+            &mut *tx,
+            Some(user_id),
+            Some(device_id),
+            "device_renamed",
+            &serde_json::json!({ "new_name": new_name }),
+        )
+        .await?;
+
+        tx.commit().await?;
         Ok(())
     }
 }

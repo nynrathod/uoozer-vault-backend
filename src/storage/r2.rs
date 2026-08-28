@@ -116,19 +116,27 @@ impl R2Client {
 
         match resp {
             Ok(head) => Ok(head.e_tag),
-            Err(aws_sdk_s3::error::SdkError::ServiceError(err))
-                if matches!(
-                    err.err(),
-                    aws_sdk_s3::operation::head_object::HeadObjectError::NotFound(_)
-                ) =>
-            {
-                Ok(None)
+            Err(aws_sdk_s3::error::SdkError::ServiceError(err)) => {
+                let status = err.raw().status().as_u16();
+
+                if status == 404 {
+                    Ok(None)
+                } else {
+                    tracing::error!(error = ?err, key, status, "R2 HEAD failed");
+                    if status == 403 {
+                        Err(AppError::Internal(anyhow::anyhow!("storage access denied")))
+                    } else {
+                        Err(AppError::ServiceUnavailable(
+                            "storage temporarily unavailable".into(),
+                        ))
+                    }
+                }
             }
             Err(e) => {
-                // FIX: If R2/MinIO is down or refuses connection, log it and return None.
-                // This allows the upload to proceed with a fresh presigned URL instead of failing with 503.
-                tracing::warn!(error = ?e, key, "R2 HEAD failed, assuming object does not exist");
-                Ok(None)
+                tracing::error!(error = ?e, key, "R2 HEAD failed (transient or network)");
+                Err(AppError::ServiceUnavailable(
+                    "storage temporarily unavailable".into(),
+                ))
             }
         }
     }

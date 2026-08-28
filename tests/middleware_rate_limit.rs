@@ -32,3 +32,34 @@ async fn auth_rate_limit_blocks_brute_force() {
         "Rate limiter must trigger 429 after exceeding the configured limit"
     );
 }
+
+#[tokio::test]
+async fn rate_limit_isolated_per_ip() {
+    let (server, _pool, _guard) = setup_app().await;
+    let mut hit_429 = false;
+    for i in 0..15 {
+        let resp = server
+            .client
+            .post(server.url(&format!("{API}/auth/prelogin")))
+            .header("x-forwarded-for", "10.0.0.1")
+            .json(&serde_json::json!({ "email": format!("ip1_{i}@example.com") }))
+            .send()
+            .await
+            .unwrap();
+        if resp.status() == 429 {
+            hit_429 = true;
+        }
+    }
+    assert!(hit_429, "First IP should be rate limited");
+
+    // Second IP should NOT be limited yet
+    let resp = server
+        .client
+        .post(server.url(&format!("{API}/auth/prelogin")))
+        .header("x-forwarded-for", "10.0.0.2")
+        .json(&serde_json::json!({ "email": "ip2@example.com" }))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(resp.status(), 429, "Second IP should not be rate limited");
+}
