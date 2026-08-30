@@ -27,12 +27,3 @@ CREATE TABLE file_chunks (
 
 CREATE INDEX idx_file_chunks_version ON file_chunks (version_id);
 CREATE INDEX idx_file_chunks_upload_pending ON file_chunks (version_id) WHERE uploaded_at IS NULL;
-
-
-ALTER TABLE file_chunks
-  ADD COLUMN IF NOT EXISTS encrypted_size  BIGINT NOT NULL,
-  ADD COLUMN IF NOT EXISTS plaintext_size  BIGINT NOT NULL,
-  ADD COLUMN IF NOT EXISTS segment_index   INTEGER NOT NULL DEFAULT 0,
-  ADD CONSTRAINT encrypted_size_matches_plaintext CHECK (
-    encrypted_size >= plaintext_size
-  );
