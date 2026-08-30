@@ -348,3 +348,15 @@ pub async fn empty_trash(
     let count = svc.empty_trash(user.user_id).await?;
     Ok(Json(serde_json::json!({ "deleted": count })))
 }
+
+pub async fn move_file(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(file_id): Path<Uuid>,
+    Json(req): Json<MoveFileRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FileService::new(&state);
+    svc.move_file(user.user_id, user.device_id, file_id, req.folder_id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}

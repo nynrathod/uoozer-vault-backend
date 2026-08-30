@@ -122,3 +122,15 @@ pub async fn restore_folder(
     svc.restore_folder(user.user_id, folder_id, &state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+pub async fn move_folder(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(folder_id): Path<Uuid>,
+    Json(req): Json<MoveFolderRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FolderService::new(state.db.clone());
+    svc.move_folder(user.user_id, folder_id, req.parent_folder_id, &state)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}

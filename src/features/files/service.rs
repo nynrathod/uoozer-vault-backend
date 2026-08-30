@@ -341,8 +341,8 @@ impl FileService {
         })
     }
 
-pub async fn get_file(&self, user_id: Uuid, file_id: Uuid) -> Result<FileResponse, AppError> {
-    let file = sqlx::query_as::<_, FileResponse>(
+    pub async fn get_file(&self, user_id: Uuid, file_id: Uuid) -> Result<FileResponse, AppError> {
+        let file = sqlx::query_as::<_, FileResponse>(
         "SELECT f.file_id, f.folder_id, f.encrypted_metadata, f.metadata_nonce,
                 f.total_size, f.current_version_id, f.deleted_at,
                 (f.current_version_id IS NOT NULL AND NOT COALESCE(
@@ -356,8 +356,8 @@ pub async fn get_file(&self, user_id: Uuid, file_id: Uuid) -> Result<FileRespons
     )
     .bind(file_id).bind(user_id).fetch_optional(&self.db).await?;
 
-    file.ok_or(AppError::NotFound)
-}
+        file.ok_or(AppError::NotFound)
+    }
 
     pub async fn list_files(
         &self,
@@ -504,35 +504,35 @@ pub async fn get_file(&self, user_id: Uuid, file_id: Uuid) -> Result<FileRespons
         file_id: Uuid,
         version_id: Option<Uuid>,
     ) -> Result<DownloadManifestResponse, AppError> {
-       let file: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
-        "SELECT file_id, current_version_id FROM files 
+        let file: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
+            "SELECT file_id, current_version_id FROM files 
          WHERE file_id = $1 AND user_id = $2 AND deleted_at IS NULL",
-    )
-    .bind(file_id)
-    .bind(user_id)
-    .fetch_optional(&self.db)
-    .await?;
-         let (_, current_version_id) = file.ok_or(AppError::NotFound)?;
+        )
+        .bind(file_id)
+        .bind(user_id)
+        .fetch_optional(&self.db)
+        .await?;
+        let (_, current_version_id) = file.ok_or(AppError::NotFound)?;
 
-    let target_version_id = match version_id {
-        Some(vid) => {
-            let exists: Option<(Uuid,)> = sqlx::query_as(
-                "SELECT v.version_id FROM file_versions v JOIN files f ON f.file_id = v.file_id
+        let target_version_id = match version_id {
+            Some(vid) => {
+                let exists: Option<(Uuid,)> = sqlx::query_as(
+                    "SELECT v.version_id FROM file_versions v JOIN files f ON f.file_id = v.file_id
                  WHERE v.version_id = $1 AND f.user_id = $2 AND f.deleted_at IS NULL",
-            )
-            .bind(vid)
-            .bind(user_id)
-            .fetch_optional(&self.db)
-            .await?;
-            if exists.is_none() {
-                return Err(AppError::NotFound);
+                )
+                .bind(vid)
+                .bind(user_id)
+                .fetch_optional(&self.db)
+                .await?;
+                if exists.is_none() {
+                    return Err(AppError::NotFound);
+                }
+                vid
             }
-            vid
-        }
-        None => current_version_id.ok_or(AppError::BadRequest(
-            "file upload is not complete — no active version".into(),
-        ))?,
-    };
+            None => current_version_id.ok_or(AppError::BadRequest(
+                "file upload is not complete — no active version".into(),
+            ))?,
+        };
 
         if !self.storage.is_configured() {
             return Err(AppError::ServiceUnavailable(
@@ -1849,5 +1849,63 @@ pub async fn get_file(&self, user_id: Uuid, file_id: Uuid) -> Result<FileRespons
         }
 
         Ok(count)
+    }
+
+    pub async fn move_file(
+        &self,
+        user_id: Uuid,
+        device_id: Uuid,
+        file_id: Uuid,
+        target_folder_id: Option<Uuid>,
+    ) -> Result<(), AppError> {
+        let exists: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT file_id FROM files WHERE file_id = $1 AND user_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(file_id)
+        .bind(user_id)
+        .fetch_optional(&self.db)
+        .await?;
+        if exists.is_none() {
+            return Err(AppError::NotFound);
+        }
+
+        if let Some(folder_id) = target_folder_id {
+            FolderService::new(self.db.clone())
+                .verify_folder_ownership(folder_id, user_id)
+                .await?;
+        }
+
+        sqlx::query(
+            "UPDATE files SET folder_id = $1, updated_at = now() \
+         WHERE file_id = $2 AND user_id = $3 AND deleted_at IS NULL",
+        )
+        .bind(target_folder_id)
+        .bind(file_id)
+        .bind(user_id)
+        .execute(&self.db)
+        .await?;
+
+        audit::log(
+            &self.db,
+            Some(user_id),
+            Some(device_id),
+            "file_moved",
+            &serde_json::json!({ "file_id": file_id, "target_folder_id": target_folder_id }),
+        )
+        .await
+        .ok();
+
+        self.broadcast(
+            user_id,
+            SyncEvent {
+                seq: 0,
+                event_type: "moved".into(),
+                resource_type: "file".into(),
+                resource_id: file_id,
+                payload: serde_json::json!({ "folder_id": target_folder_id }),
+            },
+        );
+
+        Ok(())
     }
 }

@@ -77,4 +77,5 @@ pub fn router() -> Router<AppState> {
             "/shares/{share_id}",
             axum::routing::delete(handlers::revoke_share),
         )
+        .route("/files/{file_id}/move", post(handlers::move_file))
 }

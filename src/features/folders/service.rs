@@ -515,4 +515,50 @@ impl FolderService {
 
         Ok(())
     }
+    pub async fn move_folder(
+        &self,
+        user_id: Uuid,
+        folder_id: Uuid,
+        target_parent_folder_id: Option<Uuid>,
+        state: &AppState,
+    ) -> Result<(), AppError> {
+        self.verify_folder_ownership(folder_id, user_id).await?;
+
+        if let Some(target) = target_parent_folder_id {
+            if target == folder_id {
+                return Err(AppError::BadRequest(
+                    "cannot move folder into itself".into(),
+                ));
+            }
+            if self.is_descendant_or_self(folder_id, target).await? {
+                return Err(AppError::BadRequest(
+                    "cannot move folder into itself or its own descendant".into(),
+                ));
+            }
+            self.verify_folder_ownership(target, user_id).await?;
+        }
+
+        sqlx::query(
+            "UPDATE folders SET parent_folder_id = $1, updated_at = now() \
+         WHERE folder_id = $2 AND user_id = $3 AND deleted_at IS NULL",
+        )
+        .bind(target_parent_folder_id)
+        .bind(folder_id)
+        .bind(user_id)
+        .execute(&self.db)
+        .await?;
+
+        state.broadcast_sync(
+            user_id,
+            SyncEvent {
+                seq: 0,
+                event_type: "moved".into(),
+                resource_type: "folder".into(),
+                resource_id: folder_id,
+                payload: serde_json::json!({ "parent_folder_id": target_parent_folder_id }),
+            },
+        );
+
+        Ok(())
+    }
 }

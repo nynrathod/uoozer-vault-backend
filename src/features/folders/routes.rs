@@ -32,4 +32,5 @@ pub fn router() -> Router<AppState> {
             "/folders/{folder_id}/tree",
             get(handlers::get_folder_file_tree),
         )
+        .route("/folders/{folder_id}/move", post(handlers::move_folder))
 }

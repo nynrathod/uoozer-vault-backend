@@ -268,3 +268,8 @@ pub struct BulkCompleteUploadResponse {
     pub completed: Vec<Uuid>,
     pub failed: Vec<Uuid>,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct MoveFileRequest {
+    pub folder_id: Option<Uuid>,
+}
