@@ -112,6 +112,25 @@ pub async fn add_security_headers(req: Request, next: Next) -> Response {
         header::HeaderName::from_static("referrer-policy"),
         header::HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
+    headers.insert(
+        header::HeaderName::from_static("content-security-policy"),
+        header::HeaderValue::from_static(
+            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
+             style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data: blob:; \
+             font-src 'self' data:; \
+             connect-src 'self' https://*.r2.cloudflarestorage.com http://localhost:9000; \
+             media-src 'self' blob:; \
+             worker-src 'self' blob:; \
+             frame-src 'self' blob:; \
+             object-src 'self' blob:; \
+             base-uri 'self'; form-action 'self'",
+        ),
+    );
+    headers.insert(
+        header::HeaderName::from_static("strict-transport-security"),
+        header::HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+    );
 
     response
 }
