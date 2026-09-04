@@ -1,0 +1,10 @@
+---
+source: tests/error_format.rs
+expression: body
+---
+{
+  "error": {
+    "code": "CONFLICT",
+    "message": "[message]"
+  }
+}
