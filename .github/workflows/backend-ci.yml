@@ -18,7 +18,7 @@ env:
   ARTIFACT_REPO: uoozer-vault-prod
   SERVICE: uoozer-vault-backend
   FRONTEND_URL: https://uoozer-vault.vercel.app
-  R2_ACCOUNT_ID: your-r2-account-id-here
+  R2_ACCOUNT_ID: db9547fc31e114d3843c33312e69c9f2
 
 jobs:
   test:
