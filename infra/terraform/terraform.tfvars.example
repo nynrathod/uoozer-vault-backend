@@ -1,0 +1,4 @@
+project_id   = "uoozer-vault-prod"
+region       = "us-central1"
+github_owner = "your-github-username"
+github_repo  = "uoozer-vault-backend"
