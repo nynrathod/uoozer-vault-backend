@@ -1,0 +1,94 @@
+name: Backend CI/CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "Dockerfile"
+      - "migrations/**"
+      - ".github/workflows/backend-ci.yml"
+  workflow_dispatch:
+
+env:
+  REGION: us-central1
+  PROJECT_ID: uoozer-vault-prod
+  ARTIFACT_REPO: uoozer-vault-prod
+  SERVICE: uoozer-vault-backend
+  FRONTEND_URL: https://uoozer-vault.vercel.app
+  R2_ACCOUNT_ID: your-r2-account-id-here
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vault_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --verbose
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/vault_test
+
+  build-and-deploy:
+    name: Build & Deploy
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (Workload Identity Federation — no keys)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.GH_ACTIONS_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+      - name: Build & push image
+        run: |
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/backend:latest"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE }} \
+            --image "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/backend:latest" \
+            --region ${{ env.REGION }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --service-account "vault-backend@${{ env.PROJECT_ID }}.iam.gserviceaccount.com" \
+            --memory 512Mi \
+            --cpu 1 \
+            --timeout 300 \
+            --min-instances 0 \
+            --max-instances 1 \
+            --concurrency 80 \
+            --cpu-boost \
+            --set-env-vars "ENVIRONMENT=production,SERVER__HOST=0.0.0.0,SERVER__PORT=8080,CORS__ALLOWED_ORIGINS=${{ env.FRONTEND_URL }},R2__PRESIGN_TTL_SECONDS=3600,R2__ACCOUNT_ID=${{ env.R2_ACCOUNT_ID }},R2__ENDPOINT=https://${{ env.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com" \
+            --set-secrets "DATABASE__URL=database-url:latest,JWT__PRIVATE_KEY_PEM=jwt-private-key:latest,PRELOGIN__PEPPER=prelogin-pepper:latest,R2__ACCESS_KEY_ID=r2-access-key-id:latest,R2__SECRET_ACCESS_KEY=r2-secret-access-key:latest,R2__BUCKET_NAME=r2-bucket-name:latest"
