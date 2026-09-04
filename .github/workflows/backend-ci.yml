@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - "src/**"
+      - "tests/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "Dockerfile"
@@ -49,7 +50,7 @@ jobs:
   build-and-deploy:
     name: Build & Deploy
     needs: test
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
       contents: read
