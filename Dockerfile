@@ -43,6 +43,10 @@ WORKDIR /app
 COPY --from=builder /app/target/release/uoozer-vault-backend .
 COPY --from=builder /app/migrations ./migrations
 
+# Required: Settings::load() reads config/default.toml —
+# without it the server panics with "missing field `server`"
+COPY config ./config
+
 EXPOSE 8080
 
 CMD ["./uoozer-vault-backend"]
