@@ -1,0 +1,7 @@
+target/
+.git/
+tests/
+*.md
+.env
+infra/
+node_modules/

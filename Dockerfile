@@ -1,50 +1,45 @@
-# ── Build stage ───────────────────────────────────────────────
-FROM rust:1.82-slim AS builder
+# ── Build Stage ──────────────────────────────────────────────
+FROM rust:slim-bookworm AS builder
 
 WORKDIR /app
 
-# Install dependencies for building
+# Build dependencies (kept: aws-sdk may link OpenSSL depending on feature set)
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy manifests first for better layer caching
+# Copy manifests for dependency layer caching
 COPY Cargo.toml Cargo.lock ./
-COPY migrations ./migrations
-COPY config ./config
 
-# Create a dummy src/main.rs to cache dependencies
-RUN mkdir -p src && echo "fn main() {}" > src/main.rs
-RUN cargo build --release || true
+# Dummy sources (BOTH main.rs and lib.rs — this crate has both)
+# so cargo compiles and caches all dependencies in one Docker layer
+RUN mkdir -p src \
+    && echo 'fn main() {}' > src/main.rs \
+    && echo '' > src/lib.rs \
+    && cargo build --release \
+    && rm -rf src
 
-# Copy actual source
+# Real source + migrations
 COPY src ./src
+COPY migrations ./migrations
 
-# Touch main.rs to force rebuild of actual app
-RUN touch src/main.rs
-RUN cargo build --release
+# Touch forces rebuild of the app crate, deps come from cache layer
+RUN touch src/main.rs src/lib.rs && cargo build --release
 
-# ── Runtime stage ─────────────────────────────────────────────
-FROM debian:bookworm-slim AS runtime
+# ── Runtime Stage ────────────────────────────────────────────
+FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/uoozer-vault-backend /app/uoozer-vault-backend
-COPY --from=builder /app/migrations /app/migrations
-COPY --from=builder /app/config /app/config
+COPY --from=builder /app/target/release/uoozer-vault-backend .
+COPY --from=builder /app/migrations ./migrations
 
 EXPOSE 8080
 
-# Non-root user
-RUN useradd -r -s /bin/false vault
-USER vault
-
-ENV ENVIRONMENT=production
-ENV RUST_LOG=info,uoozer_vault_backend=info,tower_http=warn
-
-ENTRYPOINT ["/app/uoozer-vault-backend"]
+CMD ["./uoozer-vault-backend"]

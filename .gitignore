@@ -1,3 +1,43 @@
 /target
 .env
 *.pem
+
+# ── Terraform ──
+# Local state should never exist (GCS backend) — but block it anyway as a guard
+*.tfstate
+*.tfstate.*
+
+# Lock files ARE committed (pins exact provider versions) — do NOT ignore:
+# .terraform.lock.hcl
+
+# Terraform working directory (downloaded providers — huge, machine-local)
+.terraform/
+.terraform/
+
+# Crash logs (contain potential secrets from state at crash time)
+crash.log
+crash.*.log
+
+# tfvars — NEVER commit real values
+*.tfvars
+*.tfvars.json
+
+# Exception: the SAFE example file has no secrets — track it
+!terraform.tfvars.example
+!*.auto.tfvars.example
+
+# Plan files (contain full state + secrets in some cases)
+*.tfplan
+*plan.out
+
+# Override files (machine-specific)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# PEM keys / secrets generated during setup
+*.pem
+jwt.pem
+pepper.txt
+*.tmp
