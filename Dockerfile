@@ -3,11 +3,14 @@ FROM rust:slim-bookworm AS builder
 
 WORKDIR /app
 
-# Build dependencies (kept: aws-sdk may link OpenSSL depending on feature set)
+# Build dependencies
+# curl: needed by utoipa-swagger-ui's build script (downloads Swagger UI assets)
+# ssl: aws-sdk may link OpenSSL depending on feature set
 RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+	pkg-config \
+	libssl-dev \
+	curl \
+	&& rm -rf /var/lib/apt/lists/*
 
 # Copy manifests for dependency layer caching
 COPY Cargo.toml Cargo.lock ./
@@ -15,10 +18,10 @@ COPY Cargo.toml Cargo.lock ./
 # Dummy sources (BOTH main.rs and lib.rs — this crate has both)
 # so cargo compiles and caches all dependencies in one Docker layer
 RUN mkdir -p src \
-    && echo 'fn main() {}' > src/main.rs \
-    && echo '' > src/lib.rs \
-    && cargo build --release \
-    && rm -rf src
+	&& echo 'fn main() {}' > src/main.rs \
+	&& echo '' > src/lib.rs \
+	&& cargo build --release \
+	&& rm -rf src
 
 # Real source + migrations
 COPY src ./src
@@ -31,9 +34,9 @@ RUN touch src/main.rs src/lib.rs && cargo build --release
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    libssl3 \
-    && rm -rf /var/lib/apt/lists/*
+	ca-certificates \
+	libssl3 \
+	&& rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
