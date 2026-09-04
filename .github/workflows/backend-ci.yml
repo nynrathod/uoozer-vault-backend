@@ -44,7 +44,7 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/vault_test
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/vault_test
 
   build-and-deploy:
     name: Build & Deploy
