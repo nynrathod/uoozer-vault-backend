@@ -4,6 +4,7 @@ use chrono::Utc;
 use dashmap::DashMap;
 use sqlx::{PgPool, Row};
 use tokio::sync::broadcast;
+use tracing::info;
 use uuid::Uuid;
 
 use crate::app_state::{AppState, SyncEvent};
@@ -540,10 +541,19 @@ impl FileService {
             ));
         }
 
-        let version: (Vec<u8>, i64, i32, Vec<u8>, Vec<u8>) = sqlx::query_as(
+        let version: (Vec<u8>, i64, i32, Option<Vec<u8>>, Option<Vec<u8>>) = sqlx::query_as(
             "SELECT encryption_header, total_size, total_chunks, wrapped_file_key, wrapped_file_key_nonce FROM file_versions WHERE version_id = $1",
         )
         .bind(target_version_id).fetch_one(&self.db).await?;
+
+        let (encryption_header, total_size, total_chunks, wrapped_file_key, wrapped_file_key_nonce) =
+            version;
+
+        let (Some(wfk), Some(wfkn)) = (wrapped_file_key, wrapped_file_key_nonce) else {
+            return Err(AppError::BadRequest(
+                "file upload is not complete — missing file key".into(),
+            ));
+        };
 
         let chunks: Vec<(i32, i32, i64, String)> = sqlx::query_as(
             "SELECT chunk_index, segment_index, chunk_size, r2_key FROM file_chunks WHERE version_id = $1 ORDER BY chunk_index",
@@ -555,11 +565,11 @@ impl FileService {
         Ok(DownloadManifestResponse {
             file_id,
             version_id: target_version_id,
-            encryption_header: crypto::encode_b64(&version.0),
-            total_size: version.1,
-            total_chunks: version.2,
-            wrapped_file_key: crypto::encode_b64(&version.3),
-            wrapped_file_key_nonce: crypto::encode_b64(&version.4),
+            encryption_header: crypto::encode_b64(&encryption_header),
+            total_size,
+            total_chunks,
+            wrapped_file_key: crypto::encode_b64(&wfk),
+            wrapped_file_key_nonce: crypto::encode_b64(&wfkn),
             chunks: chunk_infos,
         })
     }
@@ -1171,12 +1181,77 @@ impl FileService {
     pub async fn cleanup_orphaned_versions(
         &self,
         older_than_hours: i64,
-    ) -> Result<usize, AppError> {
-        use crate::features::files::cleanup::CleanupService;
-        let svc = CleanupService::new(self.db.clone(), self.storage.clone());
-        svc.cleanup_orphaned_versions(older_than_hours)
-            .await
-            .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))
+    ) -> Result<usize, sqlx::Error> {
+        let cutoff = Utc::now() - chrono::Duration::hours(older_than_hours);
+        let trashed_file_keys: Vec<String> = sqlx::query_scalar(
+            r#"
+            SELECT c.r2_key
+            FROM file_chunks c
+            JOIN file_versions v ON c.version_id = v.version_id
+            JOIN files f ON f.current_version_id = v.version_id
+            WHERE f.deleted_at IS NOT NULL
+              AND f.deleted_at < $1
+            "#,
+        )
+        .bind(cutoff)
+        .fetch_all(&self.db)
+        .await?;
+
+        let r2_keys: Vec<String> = sqlx::query_scalar(
+            r#"
+            SELECT c.r2_key
+            FROM file_chunks c
+            JOIN file_versions v ON c.version_id = v.version_id
+            WHERE v.is_active = false
+              AND v.created_at < $1
+              AND NOT EXISTS (
+                SELECT 1 FROM files f
+                WHERE f.current_version_id = v.version_id
+              )
+            "#,
+        )
+        .bind(cutoff)
+        .fetch_all(&self.db)
+        .await?;
+
+        let mut all_keys = trashed_file_keys;
+        all_keys.extend(r2_keys);
+        all_keys.sort();
+        all_keys.dedup();
+
+        let key_count = all_keys.len();
+
+        self.storage.delete_objects_best_effort(&all_keys).await;
+
+        let trashed_result =
+            sqlx::query("DELETE FROM files WHERE deleted_at IS NOT NULL AND deleted_at < $1")
+                .bind(cutoff)
+                .execute(&self.db)
+                .await?;
+
+        let result = sqlx::query(
+            r#"
+            DELETE FROM file_versions
+            WHERE is_active = false
+              AND created_at < $1
+              AND NOT EXISTS (
+                SELECT 1 FROM files f
+                WHERE f.current_version_id = file_versions.version_id
+              )
+            "#,
+        )
+        .bind(cutoff)
+        .execute(&self.db)
+        .await?;
+
+        info!(
+            deleted_trashed_files = trashed_result.rows_affected(),
+            deleted_orphaned_versions = result.rows_affected(),
+            deleted_r2_objects = key_count,
+            "orphaned upload cleanup completed"
+        );
+
+        Ok((trashed_result.rows_affected() + result.rows_affected()) as usize)
     }
 
     pub async fn verify_download_completeness(
