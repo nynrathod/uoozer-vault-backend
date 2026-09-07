@@ -18,7 +18,7 @@ env:
   PROJECT_ID: uoozer-vault-prod
   ARTIFACT_REPO: uoozer-vault-prod
   SERVICE: uoozer-vault-backend
-  FRONTEND_URL: https://uoozer-vault.vercel.app
+  FRONTEND_URL: https://www.uoozer.com
   R2_ACCOUNT_ID: db9547fc31e114d3843c33312e69c9f2
 
 jobs:
@@ -97,5 +97,5 @@ jobs:
             --max-instances 1 \
             --concurrency 80 \
             --cpu-boost \
-            --set-env-vars "ENVIRONMENT=production,SERVER_HOST=0.0.0.0,SERVER_PORT=8080,CORS_ALLOWED_ORIGINS=${{ env.FRONTEND_URL }},R2_PRESIGN_TTL_SECONDS=3600,R2_ACCOUNT_ID=${{ env.R2_ACCOUNT_ID }},R2_ENDPOINT=https://${{ env.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com" \
+            --set-env-vars "ENVIRONMENT=production,CORS_ALLOWED_ORIGINS=https://uoozer.com,https://www.uoozer.com,R2_PRESIGN_TTL_SECONDS=3600,R2_ACCOUNT_ID=${{ env.R2_ACCOUNT_ID }},R2_ENDPOINT=https://${{ env.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com" \
             --set-secrets "DATABASE_URL=database-url:latest,JWT_PRIVATE_KEY_PEM=jwt-private-key:latest,PRELOGIN_PEPPER=prelogin-pepper:latest,R2_ACCESS_KEY_ID=r2-access-key-id:latest,R2_SECRET_ACCESS_KEY=r2-secret-access-key:latest,R2_BUCKET=r2-bucket-name:latest"
