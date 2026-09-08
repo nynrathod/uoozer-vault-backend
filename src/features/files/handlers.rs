@@ -221,7 +221,7 @@ pub async fn cleanup_orphaned_uploads(
     user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
     let svc = FileService::new(&state);
-    let deleted = svc.cleanup_orphaned_versions(24).await?;
+    let deleted = svc.cleanup_orphaned_versions(user.user_id, 24).await?;
     Ok(Json(serde_json::json!({ "deleted": deleted })))
 }
 

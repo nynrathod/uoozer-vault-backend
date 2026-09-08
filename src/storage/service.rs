@@ -121,4 +121,12 @@ impl StorageService {
             }
         }
     }
+
+    pub async fn delete_objects(&self, keys: &[String]) -> Result<(), AppError> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let r2 = self.require_r2()?;
+        r2.delete_objects(keys).await
+    }
 }

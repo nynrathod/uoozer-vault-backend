@@ -155,45 +155,56 @@ impl R2Client {
             })
     }
 
-    /// Batch delete up to 1000 objects in a single request.
     pub async fn delete_objects(&self, keys: &[String]) -> Result<(), AppError> {
         if keys.is_empty() {
             return Ok(());
         }
+        for batch in keys.chunks(1000) {
+            let objects: Vec<_> = batch
+                .iter()
+                .map(|k| {
+                    aws_sdk_s3::types::ObjectIdentifier::builder()
+                        .key(k)
+                        .build()
+                })
+                .collect::<Result<_, _>>()
+                .map_err(|e| {
+                    tracing::error!(error = ?e, "failed to build delete batch");
+                    AppError::Internal(anyhow::anyhow!("batch delete build failed"))
+                })?;
 
-        let objects: Vec<_> = keys
-            .iter()
-            .map(|k| {
-                aws_sdk_s3::types::ObjectIdentifier::builder()
-                    .key(k)
-                    .build()
-            })
-            .collect::<Result<_, _>>()
-            .map_err(|e| {
-                tracing::error!(error = ?e, "failed to build delete batch");
-                AppError::Internal(anyhow::anyhow!("batch delete build failed"))
-            })?;
+            let resp = self
+                .client
+                .delete_objects()
+                .bucket(&self.bucket)
+                .delete(
+                    aws_sdk_s3::types::Delete::builder()
+                        .set_objects(Some(objects))
+                        .build()
+                        .map_err(|e| {
+                            tracing::error!(error = ?e, "failed to build Delete request");
+                            AppError::Internal(anyhow::anyhow!("batch delete build failed"))
+                        })?,
+                )
+                .send()
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = ?e, "R2 batch DELETE failed");
+                    AppError::Internal(anyhow::anyhow!("batch delete failed"))
+                })?;
 
-        self.client
-            .delete_objects()
-            .bucket(&self.bucket)
-            .delete(
-                aws_sdk_s3::types::Delete::builder()
-                    .set_objects(Some(objects))
-                    .quiet(true)
-                    .build()
-                    .map_err(|e| {
-                        tracing::error!(error = ?e, "failed to build Delete request");
-                        AppError::Internal(anyhow::anyhow!("batch delete build failed"))
-                    })?,
-            )
-            .send()
-            .await
-            .map(|_| ())
-            .map_err(|e| {
-                tracing::error!(error = ?e, "R2 batch DELETE failed");
-                AppError::Internal(anyhow::anyhow!("batch delete failed"))
-            })
+            let errors = resp.errors();
+            if !errors.is_empty() {
+                for err in errors {
+                    tracing::error!(error = ?err, "object delete failed");
+                }
+                return Err(AppError::Internal(anyhow::anyhow!(
+                    "{} object(s) failed to delete",
+                    errors.len()
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub async fn upload_object(&self, key: &str, data: Vec<u8>) -> Result<(), AppError> {
