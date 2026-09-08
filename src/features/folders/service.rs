@@ -358,18 +358,20 @@ impl FolderService {
     ) -> Result<(), AppError> {
         let mut tx = self.db.begin().await?;
 
-        let exists: Option<Uuid> = sqlx::query_scalar(
-            "SELECT folder_id FROM folders
-         WHERE folder_id = $1 AND user_id = $2 AND deleted_at IS NOT NULL
+        let row: Option<Option<chrono::DateTime<chrono::Utc>>> = sqlx::query_scalar(
+            "SELECT deleted_at FROM folders
+         WHERE folder_id = $1 AND user_id = $2
          FOR UPDATE",
         )
         .bind(folder_id)
         .bind(user_id)
         .fetch_optional(&mut *tx)
         .await?;
-        if exists.is_none() {
+
+        let Some(deleted_at) = row else {
             return Err(AppError::NotFound);
-        }
+        };
+        let was_trashed = deleted_at.is_some();
 
         let subtree: Vec<Uuid> = sqlx::query_scalar(
             r#"
@@ -408,11 +410,28 @@ impl FolderService {
         .execute(&mut *tx)
         .await?;
 
-        sqlx::query("DELETE FROM folders WHERE folder_id = ANY($1) AND user_id = $2")
-            .bind(&subtree)
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await?;
+        let folders_deleted =
+            sqlx::query("DELETE FROM folders WHERE folder_id = ANY($1) AND user_id = $2")
+                .bind(&subtree)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+
+        crate::features::audit::log(
+            &mut *tx,
+            Some(user_id),
+            None,
+            "folder_purged",
+            &serde_json::json!({
+                "folder_id": folder_id,
+                "folders": folders_deleted,
+                "files": file_ids.len(),
+                "objects": keys.len(),
+                "was_trashed": was_trashed,
+            }),
+        )
+        .await?;
 
         tx.commit().await?;
 
@@ -425,7 +444,11 @@ impl FolderService {
                 event_type: "purged".to_string(),
                 resource_type: "folder".to_string(),
                 resource_id: folder_id,
-                payload: serde_json::json!({ "objects": keys.len() }),
+                payload: serde_json::json!({
+                    "folders": folders_deleted,
+                    "files": file_ids.len(),
+                    "objects": keys.len(),
+                }),
             },
         );
         Ok(())

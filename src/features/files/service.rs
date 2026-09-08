@@ -1002,18 +1002,20 @@ impl FileService {
     ) -> Result<(), AppError> {
         let mut tx = self.db.begin().await?;
 
-        let exists: Option<Uuid> = sqlx::query_scalar(
-            "SELECT file_id FROM files
-         WHERE file_id = $1 AND user_id = $2 AND deleted_at IS NOT NULL
+        let state: Option<Option<chrono::DateTime<chrono::Utc>>> = sqlx::query_scalar(
+            "SELECT deleted_at FROM files
+         WHERE file_id = $1 AND user_id = $2
          FOR UPDATE",
         )
         .bind(file_id)
         .bind(user_id)
         .fetch_optional(&mut *tx)
         .await?;
-        if exists.is_none() {
+
+        let Some(deleted_at) = state else {
             return Err(AppError::NotFound);
-        }
+        };
+        let was_trashed = deleted_at.is_some();
 
         let (_, keys) = hard_delete_files(&mut tx, &[file_id], Some(user_id)).await?;
 
@@ -1022,7 +1024,11 @@ impl FileService {
             Some(user_id),
             None,
             "file_purged",
-            &serde_json::json!({ "file_id": file_id, "objects": keys.len() }),
+            &serde_json::json!({
+                "file_id": file_id,
+                "objects": keys.len(),
+                "was_trashed": was_trashed,
+            }),
         )
         .await?;
 
@@ -1084,34 +1090,16 @@ impl FileService {
         }
 
         if req.permanent {
-            if !req.folder_ids.is_empty() {
-                let trashed: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM folders
-                 WHERE folder_id = ANY($1) AND user_id = $2 AND deleted_at IS NOT NULL",
-                )
-                .bind(&req.folder_ids)
-                .bind(user_id)
-                .fetch_one(&mut *tx)
-                .await?;
-                if trashed != req.folder_ids.len() as i64 {
-                    return Err(AppError::BadRequest(
-                        "only trashed folders can be permanently deleted".into(),
-                    ));
-                }
-            }
             if !req.file_ids.is_empty() {
-                let trashed: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM files
-                 WHERE file_id = ANY($1) AND user_id = $2 AND deleted_at IS NOT NULL",
+                let owned: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM files WHERE file_id = ANY($1) AND user_id = $2",
                 )
                 .bind(&req.file_ids)
                 .bind(user_id)
                 .fetch_one(&mut *tx)
                 .await?;
-                if trashed != req.file_ids.len() as i64 {
-                    return Err(AppError::BadRequest(
-                        "only trashed files can be permanently deleted".into(),
-                    ));
+                if owned != req.file_ids.len() as i64 {
+                    return Err(AppError::NotFound);
                 }
             }
 
