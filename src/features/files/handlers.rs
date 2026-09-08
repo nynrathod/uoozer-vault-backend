@@ -356,7 +356,8 @@ pub async fn move_file(
     Json(req): Json<MoveFileRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let svc = FileService::new(&state);
-    svc.move_file(user.user_id, user.device_id, file_id, req.folder_id)
+    let file = svc
+        .move_file(user.user_id, user.device_id, file_id, req.folder_id)
         .await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(file))
 }

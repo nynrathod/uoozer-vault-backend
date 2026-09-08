@@ -130,7 +130,8 @@ pub async fn move_folder(
     Json(req): Json<MoveFolderRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let svc = FolderService::new(state.db.clone());
-    svc.move_folder(user.user_id, folder_id, req.parent_folder_id, &state)
+    let folder = svc
+        .move_folder(user.user_id, folder_id, req.parent_folder_id, &state)
         .await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(folder))
 }

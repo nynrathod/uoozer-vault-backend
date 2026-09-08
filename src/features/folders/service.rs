@@ -150,7 +150,13 @@ impl FolderService {
 
         let encrypted_metadata = crypto::decode_b64(&req.encrypted_metadata)?;
 
+        // Prevent moving into self or any descendant (cycle detection)
         if let Some(new_parent) = req.parent_folder_id {
+            if new_parent == folder_id {
+                return Err(AppError::BadRequest(
+                    "cannot move folder into itself".to_string(),
+                ));
+            }
             if self.is_descendant_or_self(folder_id, new_parent).await? {
                 return Err(AppError::BadRequest(
                     "cannot move folder into itself or its own descendant".to_string(),
@@ -161,13 +167,14 @@ impl FolderService {
 
         let folder = sqlx::query_as::<_, FolderResponse>(
             "UPDATE folders SET encrypted_metadata = $1, metadata_nonce = $2, parent_folder_id = $3, updated_at = now() 
-             WHERE folder_id = $4 AND deleted_at IS NULL 
+             WHERE folder_id = $4 AND user_id = $5 AND deleted_at IS NULL 
              RETURNING folder_id, parent_folder_id, encrypted_metadata, metadata_nonce, deleted_at, created_at, updated_at",
         )
         .bind(&encrypted_metadata)
         .bind(&metadata_nonce)
         .bind(req.parent_folder_id)
         .bind(folder_id)
+        .bind(user_id)
         .fetch_one(&self.db)
         .await?;
 
@@ -515,50 +522,56 @@ impl FolderService {
 
         Ok(())
     }
+    /// Moves a folder to a different parent. Prevents cycles (moving into
+    /// self/descendant). Does NOT require re-encrypting metadata.
     pub async fn move_folder(
         &self,
         user_id: Uuid,
         folder_id: Uuid,
         target_parent_folder_id: Option<Uuid>,
         state: &AppState,
-    ) -> Result<(), AppError> {
+    ) -> Result<FolderResponse, AppError> {
         self.verify_folder_ownership(folder_id, user_id).await?;
 
+        // Prevent moving into self
         if let Some(target) = target_parent_folder_id {
             if target == folder_id {
                 return Err(AppError::BadRequest(
-                    "cannot move folder into itself".into(),
+                    "cannot move folder into itself".to_string(),
                 ));
             }
+            // Prevent moving into a descendant (cycle detection)
             if self.is_descendant_or_self(folder_id, target).await? {
                 return Err(AppError::BadRequest(
-                    "cannot move folder into itself or its own descendant".into(),
+                    "cannot move folder into itself or its own descendant".to_string(),
                 ));
             }
+            // Verify target parent ownership
             self.verify_folder_ownership(target, user_id).await?;
         }
 
-        sqlx::query(
-            "UPDATE folders SET parent_folder_id = $1, updated_at = now() \
-         WHERE folder_id = $2 AND user_id = $3 AND deleted_at IS NULL",
+        let folder = sqlx::query_as::<_, FolderResponse>(
+            "UPDATE folders SET parent_folder_id = $1, updated_at = now()
+             WHERE folder_id = $2 AND user_id = $3 AND deleted_at IS NULL
+             RETURNING folder_id, parent_folder_id, encrypted_metadata, metadata_nonce, deleted_at, created_at, updated_at",
         )
         .bind(target_parent_folder_id)
         .bind(folder_id)
         .bind(user_id)
-        .execute(&self.db)
+        .fetch_one(&self.db)
         .await?;
 
         state.broadcast_sync(
             user_id,
             SyncEvent {
                 seq: 0,
-                event_type: "moved".into(),
-                resource_type: "folder".into(),
+                event_type: "moved".to_string(),
+                resource_type: "folder".to_string(),
                 resource_id: folder_id,
                 payload: serde_json::json!({ "parent_folder_id": target_parent_folder_id }),
             },
         );
 
-        Ok(())
+        Ok(folder)
     }
 }

@@ -472,7 +472,7 @@ impl FileService {
                 updated_at = now()
              WHERE file_id = $5 AND user_id = $6 AND deleted_at IS NULL
              RETURNING file_id, folder_id, encrypted_metadata, metadata_nonce,
-                       total_size, current_version_id,
+                       total_size, current_version_id, deleted_at,
                        (current_version_id IS NOT NULL AND NOT COALESCE(
                            (SELECT v.is_active FROM file_versions v WHERE v.version_id = current_version_id), false
                        )) AS is_uploading,
@@ -947,8 +947,30 @@ impl FileService {
     }
 
     pub async fn restore_file(&self, user_id: Uuid, file_id: Uuid) -> Result<(), AppError> {
-        sqlx::query("UPDATE files SET deleted_at = NULL, updated_at = now() WHERE file_id = $1 AND user_id = $2 AND deleted_at IS NOT NULL")
-            .bind(file_id).bind(user_id).execute(&self.db).await?;
+        let result = sqlx::query(
+            "UPDATE files SET deleted_at = NULL, updated_at = now() \
+             WHERE file_id = $1 AND user_id = $2 AND deleted_at IS NOT NULL",
+        )
+        .bind(file_id)
+        .bind(user_id)
+        .execute(&self.db)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound);
+        }
+
+        self.broadcast(
+            user_id,
+            SyncEvent {
+                seq: 0,
+                event_type: "restored".into(),
+                resource_type: "file".into(),
+                resource_id: file_id,
+                payload: serde_json::json!({}),
+            },
+        );
+
         Ok(())
     }
 
@@ -1932,7 +1954,7 @@ impl FileService {
         device_id: Uuid,
         file_id: Uuid,
         target_folder_id: Option<Uuid>,
-    ) -> Result<(), AppError> {
+    ) -> Result<FileResponse, AppError> {
         let exists: Option<(Uuid,)> = sqlx::query_as(
             "SELECT file_id FROM files WHERE file_id = $1 AND user_id = $2 AND deleted_at IS NULL",
         )
@@ -1950,14 +1972,20 @@ impl FileService {
                 .await?;
         }
 
-        sqlx::query(
-            "UPDATE files SET folder_id = $1, updated_at = now() \
-         WHERE file_id = $2 AND user_id = $3 AND deleted_at IS NULL",
+        let file = sqlx::query_as::<_, FileResponse>(
+            "UPDATE files SET folder_id = $1, updated_at = now()
+             WHERE file_id = $2 AND user_id = $3 AND deleted_at IS NULL
+             RETURNING file_id, folder_id, encrypted_metadata, metadata_nonce,
+                       total_size, current_version_id, deleted_at,
+                       (current_version_id IS NOT NULL AND NOT COALESCE(
+                           (SELECT v.is_active FROM file_versions v WHERE v.version_id = current_version_id), false
+                       )) AS is_uploading,
+                       created_at, updated_at",
         )
         .bind(target_folder_id)
         .bind(file_id)
         .bind(user_id)
-        .execute(&self.db)
+        .fetch_one(&self.db)
         .await?;
 
         audit::log(
@@ -1981,6 +2009,6 @@ impl FileService {
             },
         );
 
-        Ok(())
+        Ok(file)
     }
 }
