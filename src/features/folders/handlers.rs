@@ -135,3 +135,13 @@ pub async fn move_folder(
         .await?;
     Ok(Json(folder))
 }
+
+pub async fn get_folder_path(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(folder_id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let svc = FolderService::new(state.db);
+    let path = svc.get_folder_path(user.user_id, folder_id).await?;
+    Ok(Json(path))
+}

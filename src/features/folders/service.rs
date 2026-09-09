@@ -435,7 +435,11 @@ impl FolderService {
 
         tx.commit().await?;
 
-        state.storage.delete_objects_best_effort(&keys).await;
+        let key_count = keys.len();
+        let storage = state.storage.clone();
+        tokio::spawn(async move {
+            storage.delete_objects_best_effort(&keys).await;
+        });
 
         state.broadcast_sync(
             user_id,
@@ -447,7 +451,7 @@ impl FolderService {
                 payload: serde_json::json!({
                     "folders": folders_deleted,
                     "files": file_ids.len(),
-                    "objects": keys.len(),
+                    "objects": key_count,
                 }),
             },
         );
@@ -710,5 +714,38 @@ impl FolderService {
         );
 
         Ok(folder)
+    }
+
+    pub async fn get_folder_path(
+        &self,
+        user_id: Uuid,
+        folder_id: Uuid,
+    ) -> Result<Vec<FolderResponse>, AppError> {
+        self.verify_folder_ownership(folder_id, user_id).await?;
+        let folders = sqlx::query_as::<_, FolderResponse>(
+            r#"
+            WITH RECURSIVE ancestors AS (
+                SELECT folder_id, parent_folder_id, encrypted_metadata, metadata_nonce,
+                       deleted_at, created_at, updated_at, 0 AS depth
+                FROM folders
+                WHERE folder_id = $1 AND user_id = $2 AND deleted_at IS NULL
+                UNION
+                SELECT f.folder_id, f.parent_folder_id, f.encrypted_metadata, f.metadata_nonce,
+                       f.deleted_at, f.created_at, f.updated_at, a.depth + 1
+                FROM folders f
+                JOIN ancestors a ON f.folder_id = a.parent_folder_id
+                WHERE f.user_id = $2
+            )
+            SELECT folder_id, parent_folder_id, encrypted_metadata, metadata_nonce,
+                   deleted_at, created_at, updated_at
+            FROM ancestors
+            ORDER BY depth DESC
+            "#,
+        )
+        .bind(folder_id)
+        .bind(user_id)
+        .fetch_all(&self.db)
+        .await?;
+        Ok(folders)
     }
 }

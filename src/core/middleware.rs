@@ -132,6 +132,10 @@ pub async fn add_security_headers(req: Request, next: Next) -> Response {
         header::HeaderValue::from_static("max-age=31536000; includeSubDomains"),
     );
 
+    headers.insert(
+        header::HeaderName::from_static("cache-control"),
+        header::HeaderValue::from_static("no-store"),
+    );
     response
 }
 

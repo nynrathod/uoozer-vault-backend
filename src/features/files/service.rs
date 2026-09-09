@@ -507,7 +507,7 @@ impl FileService {
     ) -> Result<DownloadManifestResponse, AppError> {
         let file: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
             "SELECT file_id, current_version_id FROM files 
-         WHERE file_id = $1 AND user_id = $2 AND deleted_at IS NULL",
+         WHERE file_id = $1 AND user_id = $2",
         )
         .bind(file_id)
         .bind(user_id)
@@ -519,7 +519,7 @@ impl FileService {
             Some(vid) => {
                 let exists: Option<(Uuid,)> = sqlx::query_as(
                     "SELECT v.version_id FROM file_versions v JOIN files f ON f.file_id = v.file_id
-                 WHERE v.version_id = $1 AND f.user_id = $2 AND f.deleted_at IS NULL",
+                 WHERE v.version_id = $1 AND f.user_id = $2",
                 )
                 .bind(vid)
                 .bind(user_id)
@@ -1034,7 +1034,11 @@ impl FileService {
 
         tx.commit().await?;
 
-        self.storage.delete_objects_best_effort(&keys).await;
+        let key_count = keys.len();
+        let storage = self.storage.clone();
+        tokio::spawn(async move {
+            storage.delete_objects_best_effort(&keys).await;
+        });
 
         self.broadcast(
             user_id,
@@ -1043,7 +1047,7 @@ impl FileService {
                 event_type: "purged".into(),
                 resource_type: "file".into(),
                 resource_id: file_id,
-                payload: serde_json::json!({ "objects": keys.len() }),
+                payload: serde_json::json!({ "objects": key_count }),
             },
         );
         Ok(())
@@ -1181,7 +1185,10 @@ impl FileService {
         tx.commit().await?;
 
         if !all_keys.is_empty() {
-            self.storage.delete_objects_best_effort(&all_keys).await;
+            let storage = self.storage.clone();
+            tokio::spawn(async move {
+                storage.delete_objects_best_effort(&all_keys).await;
+            });
         }
         Ok(())
     }
@@ -1292,7 +1299,11 @@ impl FileService {
         }
 
         tx.commit().await?;
-        self.storage.delete_objects_best_effort(&r2_keys).await;
+
+        let storage = self.storage.clone();
+        tokio::spawn(async move {
+            storage.delete_objects_best_effort(&r2_keys).await;
+        });
         Ok(())
     }
 
@@ -1423,7 +1434,11 @@ impl FileService {
         let count = (purged_files + orphan_count as u64) as usize;
         tx.commit().await?;
 
-        self.storage.delete_objects_best_effort(&all_keys).await;
+        let storage = self.storage.clone();
+        tokio::spawn(async move {
+            storage.delete_objects_best_effort(&all_keys).await;
+        });
+
         info!(user_id = %user_id, purged = count, "cleanup completed");
         Ok(count)
     }
@@ -1716,7 +1731,13 @@ impl FileService {
         .fetch_optional(&self.db)
         .await?;
 
-        let row = row.ok_or(AppError::NotFound)?;
+        let row = match row {
+            Some(r) => r,
+            None => {
+                tracing::info!(share_id = %share_id, "SHARE GATE: not found / revoked / expired -> 404");
+                return Err(AppError::NotFound);
+            }
+        };
 
         let access_type: String = row.try_get("access_type")?;
 
@@ -1728,6 +1749,47 @@ impl FileService {
         let item_id: Uuid = row.try_get("item_id")?;
         let encrypted_payload: Vec<u8> = row.try_get("encrypted_payload")?;
         let encrypted_nonce: Vec<u8> = row.try_get("encrypted_nonce")?;
+
+        let mut file_version_id: Option<Uuid> = None;
+        if item_type == "file" {
+            let file_row: Option<(Uuid, Option<chrono::DateTime<Utc>>)> = sqlx::query_as(
+                "SELECT current_version_id, deleted_at FROM files WHERE file_id = $1",
+            )
+            .bind(item_id)
+            .fetch_optional(&self.db)
+            .await?;
+            match file_row {
+                None => {
+                    tracing::info!(share_id = %share_id, item_id = %item_id,
+                        "SHARE GATE: file row gone (purged) -> 404");
+                    return Err(AppError::NotFound);
+                }
+                Some((_, Some(deleted_at))) => {
+                    tracing::info!(share_id = %share_id, item_id = %item_id, deleted_at = ?deleted_at,
+                        "SHARE GATE: file TRASHED -> 410 (paused until restored)");
+                    return Err(AppError::SharedItemDeleted);
+                }
+                Some((version_id, None)) => {
+                    tracing::info!(share_id = %share_id, item_id = %item_id,
+                        "SHARE GATE: file ALIVE -> serving share");
+                    file_version_id = Some(version_id);
+                }
+            }
+        } else {
+            let folder_alive: Option<Uuid> = sqlx::query_scalar(
+                "SELECT folder_id FROM folders WHERE folder_id = $1 AND deleted_at IS NULL",
+            )
+            .bind(item_id)
+            .fetch_optional(&self.db)
+            .await?;
+            if folder_alive.is_none() {
+                tracing::info!(share_id = %share_id, item_id = %item_id,
+                    "SHARE GATE: folder TRASHED -> 410 (paused until restored)");
+                return Err(AppError::SharedItemDeleted);
+            }
+            tracing::info!(share_id = %share_id, item_id = %item_id,
+                "SHARE GATE: folder ALIVE -> serving manifest");
+        }
 
         let _ = sqlx::query(
             "INSERT INTO audit_logs (event_type, event_metadata)
@@ -1741,13 +1803,7 @@ impl FileService {
         .execute(&self.db)
         .await;
 
-        let (chunks, total_size, encryption_header) = if item_type == "file" {
-            let version_id: Uuid =
-                sqlx::query_scalar("SELECT current_version_id FROM files WHERE file_id = $1")
-                    .bind(item_id)
-                    .fetch_one(&self.db)
-                    .await?;
-
+        let (chunks, total_size, encryption_header) = if let Some(version_id) = file_version_id {
             let version_info: (Vec<u8>, i64) = sqlx::query_as(
                 "SELECT encryption_header, total_size FROM file_versions WHERE version_id = $1",
             )
@@ -2036,7 +2092,12 @@ impl FileService {
             .await?;
 
         tx.commit().await?;
-        self.storage.delete_objects_best_effort(&keys).await;
+
+        let storage = self.storage.clone();
+        tokio::spawn(async move {
+            storage.delete_objects_best_effort(&keys).await;
+        });
+
         Ok(count)
     }
 

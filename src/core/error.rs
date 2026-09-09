@@ -63,6 +63,10 @@ pub enum AppError {
     // ── Not implemented (skeleton endpoints) ──────────────────
     #[error("this endpoint is not yet implemented")]
     NotImplemented,
+
+    // ── 410 Gone ───────────────────────────────────────────────
+    #[error("this shared item is no longer available")]
+    SharedItemDeleted,
 }
 
 impl AppError {
@@ -83,6 +87,7 @@ impl AppError {
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::NotImplemented => StatusCode::NOT_IMPLEMENTED,
+            Self::SharedItemDeleted => StatusCode::GONE,
         }
     }
 
@@ -104,6 +109,7 @@ impl AppError {
             Self::Internal(_) => "INTERNAL_ERROR",
             Self::ServiceUnavailable(_) => "SERVICE_UNAVAILABLE",
             Self::NotImplemented => "NOT_IMPLEMENTED",
+            Self::SharedItemDeleted => "SHARED_ITEM_DELETED",
         }
     }
 
