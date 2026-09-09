@@ -139,12 +139,53 @@ async fn download_requires_auth() {
 // ── Download deleted file ──────────────────────────────────
 
 #[tokio::test]
-async fn download_deleted_file_returns_404() {
+async fn download_purged_file_returns_404() {
     let (server, pool, _guard) = setup_app().await;
     let (access, _, _, _) = common::signup_full(&server, "h_deleted@example.com").await;
 
     let user_id: uuid::Uuid =
         sqlx::query_scalar("SELECT user_id FROM users WHERE email = 'h_deleted@example.com'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let file_id = factory::create_file_directly(&pool, user_id, None, true).await;
+
+    let _ = server
+        .client
+        .delete(server.url(&format!("{API}/files/{file_id}")))
+        .header("authorization", format!("Bearer {access}"))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = server
+        .client
+        .delete(server.url(&format!("{API}/files/{file_id}/permanent")))
+        .header("authorization", format!("Bearer {access}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::NO_CONTENT);
+
+    let resp = server
+        .client
+        .get(server.url(&format!("{API}/files/{file_id}/download")))
+        .header("authorization", format!("Bearer {access}"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn download_trashed_file_allowed_for_owner() {
+    let (server, pool, _guard) = setup_app().await;
+    let (access, _, _, _) = common::signup_full(&server, "h_trashed@example.com").await;
+
+    let user_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT user_id FROM users WHERE email = 'h_trashed@example.com'")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -167,5 +208,5 @@ async fn download_deleted_file_returns_404() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), http::StatusCode::NOT_FOUND);
+    assert_eq!(resp.status(), http::StatusCode::SERVICE_UNAVAILABLE);
 }
