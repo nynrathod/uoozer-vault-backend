@@ -38,6 +38,7 @@ override.tf.json
 
 # PEM keys / secrets generated during setup
 *.pem
+dev_jwt_key.pem
 jwt.pem
 pepper.txt
 *.tmp

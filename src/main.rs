@@ -17,6 +17,27 @@ async fn main() -> anyhow::Result<()> {
         environment = %settings.environment,
         "starting Uoozer Vault backend"
     );
+    let mut settings = Arc::clone(&settings);
+    if settings.jwt_private_key_pem.is_empty() || settings.jwt_private_key_pem == "dev" {
+        let dev_key_path = std::path::Path::new("dev_jwt_key.pem");
+        let pem = match std::fs::read_to_string(dev_key_path) {
+            Ok(existing) => {
+                tracing::info!("reusing persisted dev JWT signing key");
+                existing
+            }
+            Err(_) => {
+                let (pem, _) =
+                    uoozer_vault_backend::core::crypto::JwtKeyPair::generate_dev_keypair();
+                std::fs::write(dev_key_path, &pem)?;
+                tracing::info!("generated and persisted new dev JWT signing key");
+                pem
+            }
+        };
+        let mut s =
+            Arc::try_unwrap(settings).expect("settings Arc must be uniquely held at startup");
+        s.jwt_private_key_pem = pem;
+        settings = Arc::new(s);
+    }
 
     // ── Database pool ──────────────────────────────────────────
     let db_pool = db::create_pool(&settings.database).await?;
