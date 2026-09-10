@@ -1,0 +1,55 @@
+services:
+  # ── Your backend, built from the Dockerfile sitting next to this file ──
+  backend:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      # Override point: everything else comes from config/default.toml +
+      # UOOZER_-prefixed vars. DATABASE_URL and the storage creds are the
+      # ones that matter here.
+      DATABASE_URL: ${DATABASE_URL}
+      R2_ENDPOINT: http://minio:9000
+      R2_ACCESS_KEY_ID: minioadmin
+      R2_SECRET_ACCESS_KEY: minioadmin
+      R2_BUCKET: uoozer-vault
+      JWT_PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM:-}
+    volumes:
+      # Stable dev JWT signing key — without this, every container rebuild
+      # generates a fresh random key and logs everyone out.
+      - dev_key:/app/dev_jwt_key.pem
+    depends_on:
+      minio:
+        condition: service_started
+      createbuckets:
+        condition: service_completed_successfully
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000" # host port — presigned URLs point here
+      - "9001:9001" # MinIO console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data # named volume = survives down/up (NOT down -v)
+
+  # Self-healing bucket: creates it if missing (e.g. after a volume wipe).
+  # Backend waits for it (service_completed_successfully) — no more
+  # NoSuchBucket races on fresh stacks.
+  createbuckets:
+    image: minio/mc
+    depends_on: [minio]
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb --ignore-existing local/uoozer-vault;
+      exit 0;
+      "
+
+volumes:
+  minio_data:
+  dev_key:
