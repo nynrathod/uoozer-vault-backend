@@ -22,6 +22,7 @@ pub struct FolderResponse {
     pub parent_folder_id: Option<Uuid>,
     pub encrypted_metadata: String, // base64
     pub metadata_nonce: String,     // base64
+    pub total_size: i64,
     pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -48,15 +49,19 @@ pub struct FlatTreeNode {
 impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for FolderResponse {
     fn from_row(row: &'r sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
         use sqlx::Row;
-
         let encrypted_metadata: Vec<u8> = row.try_get("encrypted_metadata")?;
         let metadata_nonce: Vec<u8> = row.try_get("metadata_nonce")?;
-
+        let total_size: i64 = match row.try_get::<i64, _>("total_size") {
+            Ok(v) => v,
+            Err(sqlx::Error::ColumnNotFound(_)) => 0,
+            Err(e) => return Err(e),
+        };
         Ok(Self {
             folder_id: row.try_get("folder_id")?,
             parent_folder_id: row.try_get("parent_folder_id")?,
             encrypted_metadata: crate::core::crypto::encode_b64(&encrypted_metadata),
             metadata_nonce: crate::core::crypto::encode_b64(&metadata_nonce),
+            total_size,
             deleted_at: row.try_get("deleted_at")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,

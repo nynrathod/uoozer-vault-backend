@@ -113,21 +113,69 @@ impl FolderService {
     ) -> Result<Vec<FolderResponse>, AppError> {
         if trashed {
             let folders = sqlx::query_as::<_, FolderResponse>(
-                "SELECT folder_id, parent_folder_id, encrypted_metadata, metadata_nonce, deleted_at, created_at, updated_at 
-                 FROM folders 
-                 WHERE user_id = $1 AND parent_folder_id IS NOT DISTINCT FROM $2 AND deleted_at IS NOT NULL",
+                r#"
+                WITH RECURSIVE tree AS (
+                    SELECT folder_id AS root_id, folder_id AS node_id
+                    FROM folders
+                    WHERE user_id = $1 AND parent_folder_id IS NOT DISTINCT FROM $2 AND deleted_at IS NOT NULL
+                    UNION
+                    SELECT t.root_id, f.folder_id
+                    FROM folders f
+                    JOIN tree t ON f.parent_folder_id = t.node_id
+                    WHERE f.user_id = $1
+                ),
+                sizes AS (
+                    SELECT t.root_id AS folder_id,
+                           COALESCE(SUM(fi.total_size), 0)::BIGINT AS total_size
+                    FROM tree t
+                    LEFT JOIN files fi ON fi.folder_id = t.node_id
+                    GROUP BY t.root_id
+                )
+                SELECT f.folder_id, f.parent_folder_id, f.encrypted_metadata, f.metadata_nonce,
+                       f.deleted_at, f.created_at, f.updated_at,
+                       COALESCE(s.total_size, 0)::BIGINT AS total_size
+                FROM folders f
+                LEFT JOIN sizes s ON s.folder_id = f.folder_id
+                WHERE f.user_id = $1 AND f.parent_folder_id IS NOT DISTINCT FROM $2 AND f.deleted_at IS NOT NULL
+                "#,
             )
-            .bind(user_id).bind(parent_folder_id).fetch_all(&self.db).await?;
-
+            .bind(user_id)
+            .bind(parent_folder_id)
+            .fetch_all(&self.db)
+            .await?;
             Ok(folders)
         } else {
             let folders = sqlx::query_as::<_, FolderResponse>(
-                "SELECT folder_id, parent_folder_id, encrypted_metadata, metadata_nonce, deleted_at, created_at, updated_at 
-                 FROM folders 
-                 WHERE user_id = $1 AND parent_folder_id IS NOT DISTINCT FROM $2 AND deleted_at IS NULL",
+                r#"
+                WITH RECURSIVE tree AS (
+                    SELECT folder_id AS root_id, folder_id AS node_id
+                    FROM folders
+                    WHERE user_id = $1 AND parent_folder_id IS NOT DISTINCT FROM $2 AND deleted_at IS NULL
+                    UNION
+                    SELECT t.root_id, f.folder_id
+                    FROM folders f
+                    JOIN tree t ON f.parent_folder_id = t.node_id
+                    WHERE f.user_id = $1
+                ),
+                sizes AS (
+                    SELECT t.root_id AS folder_id,
+                           COALESCE(SUM(fi.total_size), 0)::BIGINT AS total_size
+                    FROM tree t
+                    LEFT JOIN files fi ON fi.folder_id = t.node_id AND fi.deleted_at IS NULL
+                    GROUP BY t.root_id
+                )
+                SELECT f.folder_id, f.parent_folder_id, f.encrypted_metadata, f.metadata_nonce,
+                       f.deleted_at, f.created_at, f.updated_at,
+                       COALESCE(s.total_size, 0)::BIGINT AS total_size
+                FROM folders f
+                LEFT JOIN sizes s ON s.folder_id = f.folder_id
+                WHERE f.user_id = $1 AND f.parent_folder_id IS NOT DISTINCT FROM $2 AND f.deleted_at IS NULL
+                "#,
             )
-            .bind(user_id).bind(parent_folder_id).fetch_all(&self.db).await?;
-
+            .bind(user_id)
+            .bind(parent_folder_id)
+            .fetch_all(&self.db)
+            .await?;
             Ok(folders)
         }
     }
