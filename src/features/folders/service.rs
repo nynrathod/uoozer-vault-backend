@@ -636,8 +636,68 @@ impl FolderService {
         user_id: Uuid,
         folder_id: Uuid,
     ) -> Result<Vec<crate::features::folders::dto::FlatTreeNode>, AppError> {
-        self.verify_folder_ownership(folder_id, user_id).await?;
+        let to_node =
+            |id: Uuid,
+             parent_id: Option<Uuid>,
+             node_type: String,
+             meta: Vec<u8>,
+             nonce: Vec<u8>,
+             key: Option<Vec<u8>>,
+             key_nonce: Option<Vec<u8>>,
+             size: Option<i64>| crate::features::folders::dto::FlatTreeNode {
+                id,
+                parent_id,
+                node_type,
+                encrypted_metadata: crate::core::crypto::encode_b64(&meta),
+                metadata_nonce: crate::core::crypto::encode_b64(&nonce),
+                wrapped_file_key: key.map(|k| crate::core::crypto::encode_b64(&k)),
+                wrapped_file_key_nonce: key_nonce.map(|k| crate::core::crypto::encode_b64(&k)),
+                total_size: size,
+            };
 
+        if folder_id.is_nil() {
+            let rows: Vec<(
+                Uuid,
+                Option<Uuid>,
+                String,
+                Vec<u8>,
+                Vec<u8>,
+                Option<Vec<u8>>,
+                Option<Vec<u8>>,
+                Option<i64>,
+            )> = sqlx::query_as(
+                r#"
+                SELECT f.folder_id as id, f.parent_folder_id as parent_id,
+                       'folder' as node_type,
+                       f.encrypted_metadata, f.metadata_nonce,
+                       NULL::bytea as wrapped_file_key,
+                       NULL::bytea as wrapped_file_key_nonce,
+                       NULL::bigint as total_size
+                FROM folders f
+                WHERE f.user_id = $1 AND f.deleted_at IS NULL
+                UNION ALL
+                SELECT fi.file_id as id, fi.folder_id as parent_id,
+                       'file' as node_type,
+                       fi.encrypted_metadata, fi.metadata_nonce,
+                       v.wrapped_file_key, v.wrapped_file_key_nonce,
+                       fi.total_size
+                FROM files fi
+                JOIN file_versions v ON fi.current_version_id = v.version_id
+                WHERE fi.user_id = $1 AND fi.deleted_at IS NULL
+                "#,
+            )
+            .bind(user_id)
+            .fetch_all(&self.db)
+            .await?;
+            return Ok(rows
+                .into_iter()
+                .map(|(id, parent, t, meta, nonce, k, kn, s)| {
+                    to_node(id, parent, t, meta, nonce, k, kn, s)
+                })
+                .collect());
+        }
+
+        self.verify_folder_ownership(folder_id, user_id).await?;
         let rows: Vec<(
             Uuid,
             Option<Uuid>,
@@ -653,9 +713,7 @@ impl FolderService {
                 SELECT folder_id, parent_folder_id, encrypted_metadata, metadata_nonce
                 FROM folders 
                 WHERE folder_id = $1 AND user_id = $2 AND deleted_at IS NULL
-                
                 UNION ALL
-                
                 SELECT f.folder_id, f.parent_folder_id, f.encrypted_metadata, f.metadata_nonce
                 FROM folders f
                 JOIN folder_tree ft ON f.parent_folder_id = ft.folder_id
@@ -670,9 +728,7 @@ impl FolderService {
                    NULL::bytea as wrapped_file_key_nonce, 
                    NULL::bigint as total_size
             FROM folder_tree
-            
             UNION ALL
-            
             SELECT f.file_id as id, 
                    f.folder_id as parent_id, 
                    'file' as node_type, 
@@ -690,24 +746,11 @@ impl FolderService {
         .bind(user_id)
         .fetch_all(&self.db)
         .await?;
-
         Ok(rows
             .into_iter()
-            .map(
-                |(id, parent_id, node_type, meta, nonce, key, key_nonce, size)| {
-                    crate::features::folders::dto::FlatTreeNode {
-                        id,
-                        parent_id,
-                        node_type,
-                        encrypted_metadata: crate::core::crypto::encode_b64(&meta),
-                        metadata_nonce: crate::core::crypto::encode_b64(&nonce),
-                        wrapped_file_key: key.map(|k| crate::core::crypto::encode_b64(&k)),
-                        wrapped_file_key_nonce: key_nonce
-                            .map(|k| crate::core::crypto::encode_b64(&k)),
-                        total_size: size,
-                    }
-                },
-            )
+            .map(|(id, parent, t, meta, nonce, k, kn, s)| {
+                to_node(id, parent, t, meta, nonce, k, kn, s)
+            })
             .collect())
     }
 
